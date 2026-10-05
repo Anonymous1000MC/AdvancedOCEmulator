@@ -1,6 +1,7 @@
 #include "ocemu/OcEmuHost.hpp"
 
 #include "ocemu/OcScreen.hpp"
+#include "ocemu/OcSound.hpp"
 
 // Lua 5.2 headers have no extern "C" guards (added in 5.3).
 extern "C" {
@@ -430,6 +431,10 @@ int OcEmuHost::luaFsLoad(lua_State* L) {
     }
     if (std::strcmp(p, "component/keyboard_native.lua") == 0) {
       lua_pushcfunction(L, &luaKeyboardComponent);
+      return 1;
+    }
+    if (std::strcmp(p, "component/sound_native.lua") == 0) {
+      lua_pushcfunction(L, &OcSound::luaComponent);
       return 1;
     }
   }
@@ -1180,6 +1185,17 @@ std::vector<ComponentSpec> OcEmuHost::buildComponentList(int tier, bool internet
       {"tmpfs", "tmpfs", "false", "5"});
 
   if (internetCard) add("internet", "06cd4b0a-5a83-41f6-9af2-630d7d4da583", 2, {});
+
+  // Peripherals OCEmu already implements in Lua, so they cost us nothing to
+  // provide and OpenOS can actually see them.
+  //
+  // data: an in-memory key/value store (address, _, tier).
+  add("data", "36b8e2b0-1d9e-4a5f-9c3f-7a2e5b8c1d40", 3, {t});
+  add("sound_native", "1c6b2f4d-8a3e-4f52-9d17-6b0e5a8c9f24", 4, {t});
+  // drive: a floppy slot. A nil filename means "no disk in the drive", which is
+  // a normal, mountable state rather than an error.
+  add("drive", "2f4a1c88-9d3b-4e17-8b62-5c0a7e9d4318", 6,
+      {"nil", "floppy", t});
 
   add("computer", "dc096366-4201-47c3-a622-051eaf5a89b5", -1, {});
   add("ocemu", "28d4c083-57de-47c1-b4dd-ce4e2b74d108", -1, {});

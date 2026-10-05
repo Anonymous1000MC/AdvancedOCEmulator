@@ -79,6 +79,16 @@ class OcScreen {
   // renderer (and tests) can re-run it after a bulk edit.
   void markWideTails();
 
+  // Pointer state, in screen cells. Real OpenComputers exposes
+  // screen.getMousePosition()/getMouseButton(); OCEmu's own screen_sdl2 does
+  // not implement them at all, so without these here every GUI program on the
+  // machine is blind.
+  void setMouseCell(int x, int y) { mouseX_ = x; mouseY_ = y; }
+  void setMouseButton(int button, bool down);
+  [[nodiscard]] int mouseX() const { return mouseX_; }
+  [[nodiscard]] int mouseY() const { return mouseY_; }
+  [[nodiscard]] bool mouseButtonDown(int button) const;
+
   // OC's bitmap font, used to decide glyph advances when writing. Optional: with
   // no font every glyph is treated as one cell wide, which is what we did before.
   void setFont(const OcFont* font) { font_ = font; }
@@ -122,6 +132,8 @@ class OcScreen {
   static int lTurnOff(lua_State* L);
   static int lGetAspectRatio(lua_State* L);
   static int lGetKeyboards(lua_State* L);
+  static int lGetMousePosition(lua_State* L);
+  static int lGetMouseButton(lua_State* L);
   static int lSetPrecise(lua_State* L);
   static int lIsPrecise(lua_State* L);
   static int lSetTouchModeInverted(lua_State* L);
@@ -145,6 +157,10 @@ class OcScreen {
   std::uint32_t palette_[16] = {0};
   std::vector<Cell> cells_;
   const OcFont* font_ = nullptr;
+  // Pointer position in cells, or (-1, -1) when the cursor is outside the screen.
+  int mouseX_ = -1;
+  int mouseY_ = -1;
+  bool mouseDown_[3] = {false, false, false};
   std::uint64_t revision_ = 1;
 
   static OcScreen* s_active;

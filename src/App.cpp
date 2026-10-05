@@ -373,6 +373,16 @@ void App::drawOcScreen() {
   OcScreen* oc = OcScreen::active();
   if (oc == nullptr || oc->cells().empty()) return;
 
+  // Load OC's bitmap font on first use. It ships with OCEmu next to its Lua
+  // sources. Without it every GUI program renders in the host's monospace font,
+  // which is both wrong-looking and, for wide glyphs, wrong-width.
+  if (!ocFont_.loaded() && ocemu_ != nullptr) {
+    useOcFont_ = ocFont_.load(ocemu_->ocsrcDir() + "/font.hex");
+    // Hand it to the screen so screen.set() advances by the real glyph width
+    // instead of guessing one cell per codepoint.
+    if (useOcFont_) oc->setFont(&ocFont_);
+  }
+
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -407,21 +417,33 @@ void App::drawOcScreen() {
   haveGrid_ = true;
 
   const auto& cells = oc->cells();
-  const int cols = oc->width();
-  // Constant for the whole frame; computing it per cell was pure waste.
-  const auto metrics = atlas_.cellMetrics(cellW, cellH);
-  for (int y = 0; y < oc->height(); ++y) {
-    for (int x = 0; x < cols; ++x) {
-      const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(cols) +
-                            static_cast<std::size_t>(x);
-      if (i >= cells.size()) break;
-      const OcScreen::Cell& c = cells[i];
-      const ImVec2 tl(gridOrigin.x + static_cast<float>(x) * cellW,
-                      gridOrigin.y + static_cast<float>(y) * cellH);
-      drawCharacterCell(dl, atlas_, tl, cellW, cellH,
-                        static_cast<std::uint16_t>(c.value),
-                        oc->resolveColor(c.fg, c.fgPalette),
-                        oc->resolveColor(c.bg, c.bgPalette), metrics);
+
+  // Prefer OC's own bitmap font. It is the authentic rendering, and it turns
+  // 8000 per-cell ImGui draw calls into a single textured quad.
+  if (useOcFont_ && ocFont_.loaded() &&
+      composeScreen(static_cast<int>(std::lround(cellW)),
+                    static_cast<int>(std::lround(cellH)))) {
+    uploadScreenTexture();
+    dl->AddImage(static_cast<ImTextureID>(static_cast<std::intptr_t>(screenTex_)),
+                 gridOrigin, ImVec2(gridOrigin.x + totalW, gridOrigin.y + totalH));
+  } else {
+    const int cols = oc->width();
+    // Constant for the whole frame; computing it per cell was pure waste.
+    const auto metrics = atlas_.cellMetrics(cellW, cellH);
+    for (int y = 0; y < oc->height(); ++y) {
+      for (int x = 0; x < cols; ++x) {
+        const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(cols) +
+                              static_cast<std::size_t>(x);
+        if (i >= cells.size()) break;
+        const OcScreen::Cell& c = cells[i];
+        if (c.continuation) continue;
+        const ImVec2 tl(gridOrigin.x + static_cast<float>(x) * cellW,
+                        gridOrigin.y + static_cast<float>(y) * cellH);
+        drawCharacterCell(dl, atlas_, tl, cellW, cellH,
+                          static_cast<std::uint16_t>(c.value),
+                          oc->resolveColor(c.fg, c.fgPalette),
+                          oc->resolveColor(c.bg, c.bgPalette), metrics);
+      }
     }
   }
   // Selection highlight, drawn over the cells.
@@ -641,6 +663,92 @@ ImGui::End();
 //  Clipboard: selection and host clipboard passthrough
 // ---------------------------------------------------------------------------
 
+bool App::composeScreen(int cellW, int cellH) {
+  OcScreen* oc = OcScreen::active();
+  if (oc == nullptr || cellW <= 0 || cellH <= 0) return false;
+  const int cols = oc->width();
+  const int rows = oc->height();
+  const int w = cols * cellW;
+  const int h = rows * cellH;
+  // A resize changes the texture dimensions, so force a re-upload.
+  if (w <= 0 || h <= 0 || w > 16384 || h > 16384) return false;
+  if (static_cast<int>(screenPx_.size()) != w * h) {
+    screenPx_.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0);
+    texRev_ = 0;
+  }
+
+  const auto& cells = oc->cells();
+  const std::uint64_t rev = oc->revision();
+  if (rev == texRev_ && texW_ == w && texH_ == h) return true;
+
+  for (int y = 0; y < rows; ++y) {
+    for (int x = 0; x < cols; ++x) {
+      const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(cols) +
+                            static_cast<std::size_t>(x);
+      if (i >= cells.size()) break;
+      const OcScreen::Cell& c = cells[i];
+
+      // A continuation cell is the second half of a double-width glyph. The
+      // glyph that owns it already painted across both cells, so skipping it is
+      // what stops us overwriting half of every wide character with a blank.
+      if (c.continuation) continue;
+
+      const auto pack = [](const Rgb& c) -> std::uint32_t {
+        return static_cast<std::uint32_t>(c.r) | (static_cast<std::uint32_t>(c.g) << 8) |
+               (static_cast<std::uint32_t>(c.b) << 16) | 0xFF000000u;
+      };
+      const std::uint32_t bg = pack(oc->resolveColor(c.bg, c.bgPalette));
+      const std::uint32_t fg = pack(oc->resolveColor(c.fg, c.fgPalette));
+      const int gw = (c.value != 0 && ocFont_.isWide(c.value)) ? 2 : 1;
+      const int spanW = gw * cellW;
+      if (x * cellW + spanW > w) continue;
+
+      // Glyphs are 16px tall and gw*8 wide; scale to the cell with
+      // nearest-neighbour sampling so the bitmap font stays crisp.
+      const int fw = (c.value != 0) ? ocFont_.bitmap(c.value, &glyphScratch_) * 8 : 0;
+      std::uint32_t* base = &screenPx_[static_cast<std::size_t>(y * cellH) *
+                                        static_cast<std::size_t>(w)];
+      for (int py = 0; py < cellH; ++py) {
+        const int fy = std::min(15, py * 16 / cellH);
+        std::uint32_t* dst = base + static_cast<std::size_t>(py) * static_cast<std::size_t>(w) +
+                             static_cast<std::size_t>(x * cellW);
+        const std::uint8_t* srcRow =
+            glyphScratch_.data() + static_cast<std::size_t>(fy) * 16u;
+        for (int px = 0; px < spanW; ++px) {
+          const int fx = fw > 0 ? std::min(fw - 1, px * fw / spanW) : -1;
+          dst[px] = (fx >= 0 && srcRow[fx] != 0) ? fg : bg;
+        }
+      }
+    }
+  }
+  texRev_ = rev;
+  texW_ = w;
+  texH_ = h;
+  return true;
+}
+
+void App::uploadScreenTexture() {
+  if (screenTex_ == 0) {
+    glGenTextures(1, &screenTex_);
+    glBindTexture(GL_TEXTURE_2D, screenTex_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  }
+  glBindTexture(GL_TEXTURE_2D, screenTex_);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texW_, texH_, 0, GL_RGBA,
+               GL_UNSIGNED_BYTE, screenPx_.data());
+}
+
+void App::destroyScreenTexture() {
+  if (screenTex_ != 0) {
+    glDeleteTextures(1, &screenTex_);
+    screenTex_ = 0;
+  }
+}
+
 bool App::cellAt(ImVec2 pos, int* col, int* row) const {
   if (!haveGrid_ || grid_.cellW <= 0.0f || grid_.cellH <= 0.0f) return false;
   const float fx = (pos.x - grid_.origin.x) / grid_.cellW;
@@ -734,6 +842,7 @@ void App::processEvents() {
           } else if (ev.button.button == SDL_BUTTON_LEFT && ocEmuMode_) {
             int c = 0, r = 0;
             if (cellAt(ImVec2(ev.button.x, ev.button.y), &c, &r)) {
+              if (OcScreen* oc = OcScreen::active()) oc->setMouseCell(c, r);
               selecting_ = true;
               selAnchorX_ = c;
               selAnchorY_ = r;
@@ -742,12 +851,37 @@ void App::processEvents() {
             } else {
               selecting_ = false;
             }
+            if (OcScreen* oc = OcScreen::active()) {
+              const int b = ev.button.button == SDL_BUTTON_LEFT ? 1
+                             : ev.button.button == SDL_BUTTON_RIGHT ? 2 : 3;
+              oc->setMouseButton(b, true);
+            }
           }
           break;
         case SDL_MOUSEBUTTONUP:
           if (ev.button.button == SDL_BUTTON_LEFT) selecting_ = false;
+          if (ocEmuMode_) {
+            if (OcScreen* oc = OcScreen::active()) {
+              const int b = ev.button.button == SDL_BUTTON_LEFT ? 1
+                             : ev.button.button == SDL_BUTTON_RIGHT ? 2 : 3;
+              oc->setMouseButton(b, false);
+            }
+          }
           break;
         case SDL_MOUSEMOTION:
+          // Keep the guest's pointer in sync with the host cursor. Real
+          // OpenComputers exposes screen.getMousePosition(); without this a GUI
+          // program has no way to know where the pointer is.
+          if (ocEmuMode_) {
+            if (OcScreen* oc = OcScreen::active()) {
+              int c = 0, r = 0;
+              if (cellAt(ImVec2(ev.motion.x, ev.motion.y), &c, &r)) {
+                oc->setMouseCell(c, r);
+              } else {
+                oc->setMouseCell(-1, -1);
+              }
+            }
+          }
           if (selecting_ && ocEmuMode_) {
             int c = 0, r = 0;
             if (cellAt(ImVec2(ev.motion.x, ev.motion.y), &c, &r)) {

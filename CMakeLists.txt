@@ -59,6 +59,7 @@ add_library(ocemu_vm STATIC
   src/Config.cpp
   src/OcEmuHost.cpp
   src/OcScreen.cpp
+  src/OcSound.cpp
   src/ScreenBuffer.cpp
   src/MemoryAllocator.cpp
   src/InternetCard.cpp

@@ -588,6 +588,38 @@ int OcScreen::lIsPrecise(lua_State* L) {
   return 1;
 }
 
+void OcScreen::setMouseButton(int button, bool down) {
+  if (button >= 1 && button <= 3) mouseDown_[button - 1] = down;
+}
+
+bool OcScreen::mouseButtonDown(int button) const {
+  if (button < 1 || button > 3) return false;
+  return mouseDown_[button - 1];
+}
+
+int OcScreen::lGetMousePosition(lua_State* L) {
+  auto* s = self(L);
+  if (s == nullptr) return 0;
+  // OC reports 0,0 when the pointer is not over the screen, and is otherwise
+  // 1-based like every other screen coordinate.
+  if (s->mouseX_ < 0 || s->mouseY_ < 0) {
+    lua_pushinteger(L, 0);
+    lua_pushinteger(L, 0);
+  } else {
+    lua_pushinteger(L, s->mouseX_ + 1);
+    lua_pushinteger(L, s->mouseY_ + 1);
+  }
+  return 2;
+}
+
+int OcScreen::lGetMouseButton(lua_State* L) {
+  auto* s = self(L);
+  if (s == nullptr) return 0;
+  const int button = argInt(L, 1, 1);
+  lua_pushboolean(L, s->mouseButtonDown(button));
+  return 1;
+}
+
 int OcScreen::lSetTouchModeInverted(lua_State* L) {
   auto* s = self(L);
   if (s == nullptr) return 0;
@@ -668,6 +700,8 @@ int OcScreen::luaComponent(lua_State* L) {
       {"isOn", &OcScreen::lIsOn},
       {"getAspectRatio", &OcScreen::lGetAspectRatio},
       {"getKeyboards", &OcScreen::lGetKeyboards},
+      {"getMousePosition", &OcScreen::lGetMousePosition},
+      {"getMouseButton", &OcScreen::lGetMouseButton},
   };
   // Registered raw: apis/component.lua already wraps every proxy call in
   // pcall(), so a mistyped argument surfaces as a normal catchable error rather

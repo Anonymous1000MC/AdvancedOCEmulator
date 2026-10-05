@@ -29,6 +29,14 @@
 
 #include "ocemu/OcScreen.hpp"
 #include "ocemu/OcFont.hpp"
+#include "ocemu/OcSound.hpp"
+
+extern "C" {
+#include <lauxlib.h>
+#include <lua.h>
+#include <lualib.h>
+}
+
 #include "ocemu/ScreenBuffer.hpp"
 #include "ocemu/Tiers.hpp"
 
@@ -232,6 +240,83 @@ void testWideGlyphLayout() {
   const auto& after = screen.cells();
   CHECK(!after[4].continuation);
   CHECK(!after[5].continuation);
+}
+
+// The pointer API real OpenComputers exposes. OCEmu's screen_sdl2 implements
+// neither, so without it here every GUI program on the machine is blind.
+
+// OCEmu's sound_card.lua is a stub that cannot even load without a real
+// elsa.SDL audio device, so the card is ours. Check the guest-visible contract:
+// the sample rate we advertise, that the component returns the four tables
+// api/component.lua expects, and that speaker handles are usable.
+void testSoundCard() {
+  lua_State* L = luaL_newstate();
+  luaL_openlibs(L);
+
+  lua_pushcfunction(L, &ocemu::OcSound::luaComponent);
+  lua_call(L, 0, 4);
+  // (proxy, cec, mai, di): api/component.lua indexes mai[k] for every function
+  // on the proxy, so a short return makes connecting the component throw.
+  for (int i = 1; i <= 4; ++i) CHECK(lua_istable(L, -i));
+
+  lua_getfield(L, -4, "type");
+  CHECK_EQ(std::string(lua_tostring(L, -1)), "sound");
+  lua_pop(L, 1);
+
+  lua_getfield(L, -4, "getSampleRate");
+  lua_pushinteger(L, 0);
+  lua_call(L, 1, 1);
+  CHECK_EQ(static_cast<int>(lua_tointeger(L, -1)), ocemu::OcSound::kSampleRate);
+  lua_pop(L, 1);
+
+  lua_getfield(L, -4, "openSpeaker");
+  lua_pushinteger(L, 0);
+  lua_pushinteger(L, 16667);
+  lua_pushnumber(L, 440.0);
+  lua_pushnumber(L, 1.0);
+  lua_pushinteger(L, 0);
+  lua_pushinteger(L, 0);
+  lua_call(L, 6, 1);
+  const int handle = static_cast<int>(lua_tointeger(L, -1));
+  CHECK(handle >= 1);
+  lua_pop(L, 1);
+
+  // Pushing a sample must synthesise, not throw.
+  lua_getfield(L, -4, "pushSample");
+  lua_pushinteger(L, handle);
+  lua_pushnumber(L, 0.5);
+  CHECK(lua_pcall(L, 2, 0, 0) == 0);
+
+  lua_close(L);
+}
+
+void testScreenPointer() {
+  OcScreen screen;
+  screen.configure(40, 10, 3, 0);
+
+  // Off-screen by default.
+  CHECK_EQ(screen.mouseX(), -1);
+
+  // 1-based in, stored 0-based, reported back 1-based.
+  screen.setMouseCell(7, 3);
+  CHECK_EQ(screen.mouseX(), 7);
+  CHECK_EQ(screen.mouseY(), 3);
+
+  // Left/middle/right, 1-based like OpenComputers.
+  CHECK(!screen.mouseButtonDown(1));
+  screen.setMouseButton(1, true);
+  screen.setMouseButton(3, true);
+  CHECK(screen.mouseButtonDown(1));
+  CHECK(!screen.mouseButtonDown(2));
+  CHECK(screen.mouseButtonDown(3));
+  screen.setMouseButton(1, false);
+  CHECK(!screen.mouseButtonDown(1));
+  // Out-of-range buttons are simply not down.
+  CHECK(!screen.mouseButtonDown(0));
+  CHECK(!screen.mouseButtonDown(9));
+
+  screen.setMouseCell(-1, -1);
+  CHECK_EQ(screen.mouseX(), -1);
 }
 
 void testTiers() {
@@ -978,9 +1063,7 @@ void testOpenOsBoot() {
   group("integration: boot OpenOS (OCEmu Lua core)");
   namespace fs = std::filesystem;
 
-  const char* srcEnv = std::getenv("OCEMU_OC_SRC");
   const std::string ocSrc = findOcEmuSrc();
-  const char* dataEnv = std::getenv("OCEMU_OC_DATA");
   const std::string ocData = findOcEmuData();
 
   std::error_code ec;
@@ -1338,6 +1421,8 @@ int main() {
   std::printf("ocemu core tests\n================\n");
 
   testOcFont();
+  testSoundCard();
+  testScreenPointer();
   testWideGlyphLayout();
   testScreenWriteThroughput();
   testTiers();

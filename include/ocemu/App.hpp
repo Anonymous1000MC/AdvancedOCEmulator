@@ -18,6 +18,7 @@
 
 #include "ocemu/Config.hpp"
 #include "ocemu/GlyphAtlas.hpp"
+#include "ocemu/OcFont.hpp"
 #include "ocemu/OpenOsRestore.hpp"
 #include "ocemu/InternetCard.hpp"
 #include "ocemu/LuaMachine.hpp"
@@ -95,6 +96,22 @@ class App {
   };
   CellRect grid_{};
   bool haveGrid_ = false;
+
+  // OC's own bitmap font, rasterised into a texture. This is what real
+  // OpenComputers draws; using the host's monospace font instead made every
+  // GUI program look subtly wrong, and cost one ImGui draw call per cell per
+  // frame (8000 at tier 3).
+  OcFont ocFont_;
+  bool useOcFont_ = false;
+  std::vector<std::uint32_t> screenPx_;
+  unsigned screenTex_ = 0;
+  int texW_ = 0;
+  int texH_ = 0;
+  std::uint64_t texRev_ = 0;
+  std::vector<std::uint8_t> glyphScratch_;
+  bool composeScreen(int cellW, int cellH);
+  void uploadScreenTexture();
+  void destroyScreenTexture();
   // Selection, in cell coordinates, inclusive. anchor is where the drag began.
   bool selecting_ = false;
   int selAnchorX_ = 0, selAnchorY_ = 0;

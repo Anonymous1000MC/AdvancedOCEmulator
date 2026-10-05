@@ -186,14 +186,50 @@ the shell prompt, and that typed characters (including uppercase) are echoed.
 | `openos/` | OpenOS 1.8.10, the reference copy |
 | `third_party/OCEmu/` | vendored OCEmu |
 
+## Components
+
+Provided by OCEmu's own Lua components: `gpu`, `eeprom`, three `filesystem`
+volumes, `modem`, `internet` (optional), `computer`, `ocemu`.
+
+Provided natively:
+
+| Component | Notes |
+| --- | --- |
+| `screen` | Replaces `screen_sdl2.lua`. O(1) writes, OC's own bitmap font, palette, depth, keycodes, mouse and touch. |
+| `keyboard` | Replaces `keyboard_sdl2.lua`. Real SDL key events, printable text, modifiers. |
+| `sound` | Replaces `sound_card.lua`. See below. |
+| `data` | In-memory key/value store (OCEmu's `data.lua`). |
+| `drive` | Floppy slot (OCEmu's `drive.lua`), currently mounted empty. |
+
+### The sound card
+
+OCEmu's `sound_card.lua` is a stub: every method is `--STUB`, and the file calls
+`elsa.SDL.openAudioDevice` at load time, so it cannot even load here
+(`elsa.SDL` is `false`). `sound_native` therefore implements the card directly:
+
+- `getSampleRate()` reports 44100, and the audio device refuses to resample, so
+  the rate the guest is told is the rate it gets.
+- `openSpeaker(speaker, dt, freq, volume, delay, mode)` returns a handle.
+  `pushSample(handle, sample)` then takes one amplitude per `dt` period and the
+  **card** synthesises the waveform, as real hardware does, rather than making
+  the guest do it.
+- Sine, square, triangle and sawtooth; `setFrequency`, `setVolume`, `setPitch`,
+  `setSpeed`, `closeSpeaker`, `getError`.
+- Speakers mix additively. The ring buffer is mutex-guarded because the guest
+  runs on the Lua thread while SDL drains it on the audio thread, and it is
+  capped at two seconds: a guest that stops pushing drops the oldest audio
+  instead of growing memory without bound.
+
 ## Known gaps
 
-- **No sound card.** `beepVolume` is set to 0, so OpenOS's boot beep is silent.
-- **No mouse/touch.** `screen.getMousePosition` and friends are unimplemented, so
-  GUI programs can't read the pointer. (Text selection and clipboard work.)
-- **No modem, drive or data components.**
-- The OC font (`src/OcFont.cpp`) is decoded and unit-tested but not yet used for
-  rendering; text currently uses the system monospace font.
+- **Modem radio.** The `modem` component is present, but there is only one
+  machine, so there is nothing to transmit to and wireless is inert.
+- **Drive has no disk.** The `drive` component mounts empty; there is no UI to
+  insert one.
+- **Rendering is not accelerated.** The screen is composited on the CPU into one
+  texture, which is fast enough at tier 3 but is not what a real GPU path does.
+- **Debugger.** OCEmu's debugger is not wired to our host, so there is no
+  stepping or breakpoint UI.
 
 ## Licence
 
