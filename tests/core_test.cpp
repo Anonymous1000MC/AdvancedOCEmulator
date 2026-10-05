@@ -206,6 +206,33 @@ void testScreenWriteThroughput() {
 
 // Double-width glyphs must claim the cell to their right, exactly as
 // screen.set does when it advances by getCharWidth().
+
+// Regression: lSet used to store only the UTF-8 *lead byte*, so U+2580 came out
+// as 0xE2 and OpenOS's box-drawing borders rendered as rows of "a-circumflex".
+// Check that real codepoints survive a string write.
+void testLSetUtf8() {
+  OcScreen screen;
+  screen.configure(40, 6, 3, 0);
+
+  // U+2580 FULL BLOCK (E2 96 80), U+2550 DOUBLE HORIZONTAL (E2 95 90),
+  // U+00E9 e-acute (C3 A9), and U+2588 FULL BLOCK (E2 96 88).
+  const char* text = "\xE2\x96\x80\xE2\x95\x90\xC3\xA9\xE2\x96\x88";
+  screen.writeStringForTest(0, 0, text);
+
+  const auto& cells = screen.cells();
+  CHECK_EQ(cells[0].value, std::uint32_t{0x2580});
+  CHECK_EQ(cells[1].value, std::uint32_t{0x2550});
+  CHECK_EQ(cells[2].value, std::uint32_t{0x00E9});
+  CHECK_EQ(cells[3].value, std::uint32_t{0x2588});
+  // Nothing spilled into the next cell. A freshly configured screen is filled
+  // with spaces, not zeros.
+  CHECK(cells[4].value == 0u || cells[4].value == static_cast<std::uint32_t>(' '));
+
+  // A truncated sequence must not run off the end or loop forever.
+  screen.writeStringForTest(0, 1, "\xE2\x96");
+  CHECK_EQ(cells[40].value, std::uint32_t{0xFFFD});
+}
+
 void testWideGlyphLayout() {
   OcFont font;
   const std::filesystem::path hexPath(findOcEmuSrc() + "/font.hex");
@@ -1423,6 +1450,7 @@ int main() {
   testOcFont();
   testSoundCard();
   testScreenPointer();
+  testLSetUtf8();
   testWideGlyphLayout();
   testScreenWriteThroughput();
   testTiers();

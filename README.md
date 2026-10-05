@@ -222,6 +222,9 @@ OCEmu's `sound_card.lua` is a stub: every method is `--STUB`, and the file calls
 
 ## Known gaps
 
+- **Astral-plane characters** (emoji and anything above U+FFFF) decode to
+  U+FFFD. OpenComputers' screen cells are 16-bit, so these would need surrogate
+  pairs.
 - **Modem radio.** The `modem` component is present, but there is only one
   machine, so there is nothing to transmit to and wireless is inert.
 - **Drive has no disk.** The `drive` component mounts empty; there is no UI to

@@ -1,4 +1,5 @@
 #include "ocemu/OcScreen.hpp"
+#include "ocemu/ScreenBuffer.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -389,18 +390,6 @@ int OcScreen::lSet(lua_State* L) {
   // "string")) and only the raw component API passes a number, so accept both.
   // Treating the string as an integer stored a 0 for every glyph, which is why
   // OpenOS drew nothing at all.
-  auto put = [s](int cx, int cy, std::uint32_t v) {
-    if (cx < 0 || cy < 0 || cx >= s->width_ || cy >= s->height_) return;
-    Cell& c = s->cells_[static_cast<std::size_t>(cy) * static_cast<std::size_t>(s->width_) +
-                             static_cast<std::size_t>(cx)];
-    c.value = v;
-    c.fg = s->fgColor_;
-    c.bg = s->bgColor_;
-    c.fgPalette = s->fgPalette_;
-    c.bgPalette = s->bgPalette_;
-    // Writing into a cell that was the tail of a wide glyph breaks the pair.
-    c.continuation = false;
-  };
 
   if (lua_type(L, 3) == LUA_TSTRING) {
     // utf8.next semantics: walk codepoints, laying them out along one axis.
@@ -410,32 +399,35 @@ int OcScreen::lSet(lua_State* L) {
       int cx = x;
       int cy = y;
       for (size_t i = 0; i < len;) {
-        const unsigned char c = static_cast<unsigned char>(text[i]);
-        size_t adv = 1;
-        if (c >= 0xF0) adv = 4;
-        else if (c >= 0xE0) adv = 3;
-        else if (c >= 0xC0) adv = 2;
-        put(cx, cy, c);
+        // Decode properly. The old loop computed each sequence's length but
+        // stored only the lead byte, so every non-ASCII character rendered as
+        // Latin-1 mojibake: U+2580 (E2 96 80) became 0xE2, i.e. "a-circumflex".
+        // That is why OpenOS's box-drawing borders came out as rows of â.
+        const std::uint16_t cp = ScreenBuffer::decodeUtf8(text, len, i);
+        put(s, cx, cy, cp);
+        // Real OpenComputers lays a double-width glyph over two cells and
+        // continues after it, so advance by the glyph's width, not by one.
+        const int step =
+            (s->font_ != nullptr && s->font_->loaded()) ? s->font_->width(cp) : 1;
         if (vertical) {
-          ++cy;
+          cy += (step > 0 ? step : 1);
           if (cy >= s->height_) break;
         } else {
-          ++cx;
+          cx += (step > 0 ? step : 1);
           if (cx >= s->width_) break;
         }
-        i += adv;
       }
     }
   } else {
     auto value = static_cast<std::uint32_t>(argInt(L, 3));
     if (vertical) {
       for (int i = 0; value != 0 && i < 256; ++i) {
-        put(x, y + i, value & 0xFF);
+        put(s, x, y + i, value & 0xFF);
         value >>= 8;
       }
     } else {
       for (int i = 0; value != 0 && i < 256; ++i) {
-        put(x + i, y, value & 0xFF);
+        put(s, x + i, y, value & 0xFF);
         value >>= 8;
       }
     }
@@ -586,6 +578,40 @@ int OcScreen::lIsPrecise(lua_State* L) {
   auto* s = self(L);
   lua_pushboolean(L, s != nullptr && s->precise_);
   return 1;
+}
+
+void OcScreen::writeStringForTest(int x, int y, const char* text, bool vertical) {
+  if (text == nullptr) return;
+  const std::size_t len = std::strlen(text);
+  int cx = x;
+  int cy = y;
+  for (std::size_t i = 0; i < len;) {
+    const std::uint16_t cp = ScreenBuffer::decodeUtf8(text, len, i);
+    put(this, cx, cy, cp);
+    const int step = (font_ != nullptr && font_->loaded()) ? font_->width(cp) : 1;
+    if (vertical) {
+      cy += (step > 0 ? step : 1);
+      if (cy >= height_) break;
+    } else {
+      cx += (step > 0 ? step : 1);
+      if (cx >= width_) break;
+    }
+  }
+  markWideTails();
+  touch();
+}
+
+void OcScreen::put(OcScreen* s, int cx, int cy, std::uint32_t v) {
+  if (s == nullptr || cx < 0 || cy < 0 || cx >= s->width_ || cy >= s->height_) return;
+  Cell& c = s->cells_[static_cast<std::size_t>(cy) * static_cast<std::size_t>(s->width_) +
+                       static_cast<std::size_t>(cx)];
+  c.value = v;
+  c.fg = s->fgColor_;
+  c.bg = s->bgColor_;
+  c.fgPalette = s->fgPalette_;
+  c.bgPalette = s->bgPalette_;
+  // Writing into a cell that is the tail of a wide glyph breaks the pair.
+  c.continuation = false;
 }
 
 void OcScreen::setMouseButton(int button, bool down) {

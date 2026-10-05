@@ -73,6 +73,10 @@ class OcScreen {
   // Writes one cell exactly as a component `set` call would. Exposed for the
   // render benchmark in the tests; not part of the component API.
   void writeForTest(int x, int y, std::uint32_t value);
+  // Exercises the same string path as the component's `set`, 1-based like it.
+  void writeStringForTest(int x, int y, const char* text, bool vertical = false);
+  // The single-cell write used by lSet, exposed for tests.
+  static void put(OcScreen* s, int cx, int cy, std::uint32_t v);
 
 
   // Claims the trailing cell of every double-width glyph on screen. Public so the
