@@ -330,14 +330,20 @@ int OcScreen::lSetPaletteColor(lua_State* L) {
 }
 
 void OcScreen::writeForTest(int x, int y, std::uint32_t value) {
-  if (x < 0 || y < 0 || x >= width_ || y >= height_) return;
-  Cell& c = cells_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) +
-                   static_cast<std::size_t>(x)];
+  // 1-based, exactly like the component's `set`: OC's screen coordinates start
+  // at 1, and lSet subtracts one before indexing.
+  const int cx = x - 1;
+  const int cy = y - 1;
+  if (cx < 0 || cy < 0 || cx >= width_ || cy >= height_) return;
+  Cell& c = cells_[static_cast<std::size_t>(cy) * static_cast<std::size_t>(width_) +
+                   static_cast<std::size_t>(cx)];
   c.value = value;
   c.fg = fgColor_;
   c.bg = bgColor_;
   c.fgPalette = fgPalette_;
   c.bgPalette = bgPalette_;
+  c.continuation = false;
+  markWideTails();
   touch();
 }
 
