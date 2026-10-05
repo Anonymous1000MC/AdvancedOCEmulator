@@ -1,0 +1,22 @@
+{
+  "name": "AdvancedOCEmulator",
+  "purpose": "Restore assets for the Advanced OpenComputers Emulator's 'Restore to OpenOS' button.",
+  "openos_version": "1.8.10",
+  "target": {
+    "machine_data_dir": "~/.local/share/ocemu",
+    "eeprom_component": "eeprom",
+    "restore_file": "code.lua",
+    "note": "The EEPROM's code.lua is the bootloader. Overwriting it is what breaks the machine (e.g. flashing another OS installer over it)."
+  },
+  "restore": {
+    "url": "https://raw.githubusercontent.com/Anonymous1000MC/AdvancedOCEmulator/main/restore/bootloader.lua",
+    "sha256": "e412a8dcffcd8b3cc3a9da017ed34641a4454303a45c9c5e2af514309eb32fae",
+    "bytes": 6803
+  },
+  "openos_tree": {
+    "path": "openos/",
+    "sha256": "9b559655cfd448e9bd2976580448eb74c93b070c07c6b776bad33f8ef285c670",
+    "files": 179,
+    "note": "Reference copy of the OpenOS tree. It is normally already installed on the machine's writable filesystem; the button only needs to restore the bootloader."
+  }
+}
