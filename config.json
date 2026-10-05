@@ -1,0 +1,8 @@
+{
+  "gpu_tier": 3,
+  "infinite_memory": true,
+  "internet_card": true,
+  "ram_size_kb": -1,
+  "screen_tier": 3,
+  "version": 1
+}

@@ -1,2 +1,19 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+
+# Local emulator state
+config.local.json
 *.bak
+*.orig
+
+# Editor / OS noise
 .DS_Store
+*.swp
+.vscode/
+.idea/
+compile_commands.json
+
+# OCEmu writes machine data under the user's data dir, never here, but be safe.
+third_party/OCEmu/src/loot/**/*.tmp
