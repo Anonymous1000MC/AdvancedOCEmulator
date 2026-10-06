@@ -57,6 +57,7 @@ class App {
   void drawOcScreen();
   void drainAlerts();
   void drawOverlay();
+  void drawConsole();
   void drawRestoreControls();
 
   [[nodiscard]] std::filesystem::path resolveConfigPath() const;
@@ -154,6 +155,7 @@ class App {
   bool saveRequested_ = false;
   bool showPanel_ = true;
   bool showStats_ = false;
+  bool showConsole_ = false;
 
   std::filesystem::path romPath_;
   std::string glRenderer_;

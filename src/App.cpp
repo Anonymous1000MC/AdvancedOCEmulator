@@ -340,8 +340,14 @@ bool App::bootOcEmu() {
 
   const std::string src = "assert(loadfile([[" + boot.string() + "]]))()";
   if (!lua_->runChunk(src, "=ocemu_boot", &err)) {
-    alerts_.push_back("OpenComputers boot: " + err);
-    std::fprintf(stderr, "ocemu: OpenComputers boot failed: %s\n", err.c_str());
+    // Report it and keep the GUI up. Returning false used to end the process,
+    // so a boot error was unrecoverable: you could not fix config.json, press
+    // Reboot, or copy the message out. It is now a log line like any other.
+    const std::string msg = "OpenComputers boot failed: " + err;
+    alerts_.push_back(msg);
+    logLines_.push_back("[alert] " + msg);
+    std::fprintf(stderr, "ocemu: %s\n", msg.c_str());
+    showConsole_ = true;
     return false;
   }
 
@@ -562,6 +568,9 @@ void App::drainAlerts() {
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.45f, 1.0f));
       ImGui::BulletText("%s", alerts_[i].c_str());
       ImGui::PopStyleColor();
+      // Toasts disappear after a few seconds, which is useless when you are
+      // trying to read an error. Keep them.
+      logLines_.push_back("[alert] " + alerts_[i]);
     }
   }
   ImGui::End();
@@ -689,6 +698,67 @@ return table.concat(seen, "\n") .. "|" .. ram
     if (nl == std::string::npos) break;
     start = nl + 1;
   }
+}
+
+void App::drawConsole() {
+  if (!showConsole_) return;
+  ImGui::SetNextWindowSize(ImVec2(760.0f, 380.0f), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin("Console", &showConsole_)) {
+    ImGui::End();
+    return;
+  }
+
+  // Selectable so the text can be highlighted and copied out, which is the
+  // whole point: an error that scrolls past in a terminal is not reportable.
+  const ImGuiChildFlags childFlags =
+      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding;
+  const bool atBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
+  if (ImGui::BeginChild("##console_lines", ImVec2(0.0f, -46.0f), childFlags)) {
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 1.0f));
+    for (const auto& l : logLines_) {
+      // Tag anything that looks like a failure so it stands out when scrolling.
+      const bool bad = l.find("[alert]") != std::string::npos ||
+                       l.find("error") != std::string::npos ||
+                       l.find("failed") != std::string::npos ||
+                       l.find("FAIL") != std::string::npos;
+      if (bad) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.45f, 1.0f));
+      ImGui::TextUnformatted(l.c_str());
+      if (bad) ImGui::PopStyleColor();
+    }
+    ImGui::PopStyleVar();
+    if (atBottom) ImGui::SetScrollHereY(1.0f);
+  }
+  ImGui::EndChild();
+
+  if (ImGui::Button("Copy all")) {
+    std::string all;
+    all.reserve(logLines_.size() * 48);
+    for (const auto& l : logLines_) {
+      all += l;
+      all += '\n';
+    }
+    ImGui::SetClipboardText(all.c_str());
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Copy last error")) {
+    // Just the failures: usually what you want to paste into an issue.
+    std::string errs;
+    for (const auto& l : logLines_) {
+      if (l.find("[alert]") != std::string::npos ||
+          l.find("error") != std::string::npos ||
+          l.find("failed") != std::string::npos) {
+        errs += l;
+        errs += '\n';
+      }
+    }
+    ImGui::SetClipboardText(errs.c_str());
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Clear")) logLines_.clear();
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu lines", logLines_.size());
+
+  ImGui::End();
 }
 
 void App::drawOverlay() {
@@ -1241,6 +1311,8 @@ int App::run() {
 
       ImGui::Separator();
       if (ImGui::Button("Diagnostics", ImVec2(120.0f, 0.0f))) showStats_ = !showStats_;
+      ImGui::SameLine();
+      if (ImGui::Button("Console", ImVec2(100.0f, 0.0f))) showConsole_ = !showConsole_;
       ImGui::SameLine();
       if (ImGui::Button("Quit", ImVec2(80.0f, 0.0f))) running_ = false;
     }
