@@ -125,6 +125,7 @@ class App {
   std::vector<std::string> guestComponents_;
   std::string guestComponentsError_;
   bool guestComponentsQueried_ = false;
+  std::string guestRamBytes_;
   std::string selectedText() const;
   void copySelection();
   void pasteClipboard();

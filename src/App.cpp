@@ -653,9 +653,17 @@ void App::refreshGuestComponents() {
   // guest refers to its own globals directly.
   const std::string chunk = R"LUA(
 local seen = {}
-for t in pairs(component.list()) do seen[#seen+1] = t end
+-- component.list() is keyed by ADDRESS with the type as the VALUE
+-- (tbl[address] = proxy.type), so iterate the values. Treating the keys as
+-- types made every row read MISSING.
+for _, t in pairs(component.list()) do seen[#seen+1] = t end
 table.sort(seen)
-return table.concat(seen, "\n")
+-- Also report what the guest thinks its RAM is, so the host-side heap number
+-- below cannot be mistaken for it.
+local ram = "?"
+local okRam, ramBytes = pcall(computer.totalMemory)
+if okRam and type(ramBytes) == "number" then ram = tostring(ramBytes) end
+return table.concat(seen, "\n") .. "|" .. ram
 )LUA";
   std::string err;
   std::string joined;
@@ -670,6 +678,13 @@ return table.concat(seen, "\n")
     const std::size_t nl = joined.find('\n', start);
     const std::string line =
         joined.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+    // The last line carries computer.totalMemory(), not a component type.
+    if (line.size() > 1 && line[0] == '|') {
+      guestRamBytes_ = line.substr(1);
+      if (nl == std::string::npos) break;
+      start = nl + 1;
+      continue;
+    }
     if (!line.empty()) guestComponents_.push_back(line);
     if (nl == std::string::npos) break;
     start = nl + 1;
@@ -692,17 +707,19 @@ void App::drawOverlay() {
       // RAM is a fixed machine spec. Show both, and say which is which.
       {
         const int ramKb = config_.values().effectiveRamKb();
-        if (ramKb < 0) {
-          ImGui::Text("RAM       : unlimited (infinite_memory)");
-        } else {
-          ImGui::Text("RAM       : %d KiB (%zu bytes)", ramKb, alloc.limitBytes());
-        }
-        ImGui::Text("Lua heap  : %zu bytes used, %zu peak", alloc.usedBytes(),
+        // Be exact about what this measures. It is our host-side accounting of
+        // the Lua VM's heap - NOT the emulated machine's RAM. OCEmu models
+        // machine RAM as a fixed spec (computer.totalMemory()) and does not
+        // meter guest allocations, so there is no guest RAM usage to show here.
+        // The Component Manager's slider bounds this heap, and only this heap.
+        ImGui::Text("Host RAM cap : %s",
+                    ramKb < 0 ? "unlimited" : (std::to_string(ramKb) + " KiB").c_str());
+        ImGui::Text("Lua heap     : %zu bytes used, %zu peak", alloc.usedBytes(),
                     alloc.peakBytes());
         if (alloc.infinite()) {
-          ImGui::Text("Host cap  : unlimited");
+          ImGui::Text("Heap cap     : unlimited");
         } else {
-          ImGui::Text("Host cap  : %zu bytes", alloc.limitBytes());
+          ImGui::Text("Heap cap     : %zu bytes", alloc.limitBytes());
         }
         if (alloc.refusedCount() > 0) {
           ImGui::Text("Refused   : %llu requests, %zu bytes",
@@ -729,8 +746,11 @@ void App::drawOverlay() {
         ImGui::Text("Internet card     : %s",
                     cfg.internetCard ? "enabled" : "disabled");
         const int ramKb = cfg.effectiveRamKb();
-        ImGui::Text("Guest RAM spec    : %s",
+        ImGui::Text("Host RAM cap      : %s",
                     ramKb < 0 ? "unlimited" : (std::to_string(ramKb) + " KiB").c_str());
+        if (!guestRamBytes_.empty() && guestRamBytes_ != "0" && guestRamBytes_ != "?") {
+          ImGui::Text("Guest totalMemory(): %s bytes", guestRamBytes_.c_str());
+        }
 
         const auto specs =
             OcEmuHost::buildComponentList(cfg.gpuTier, cfg.internetCard);
