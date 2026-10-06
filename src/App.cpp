@@ -1320,6 +1320,7 @@ int App::run() {
 
     drainAlerts();
     drawOverlay();
+    drawConsole();
 
     ImGui::Render();
 
