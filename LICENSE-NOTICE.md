@@ -37,3 +37,15 @@ described in the README.
 OCEmu's FFI layer uses `luaffifb` (vendored under `third_party/OCEmu/luaffifb`).
 It is not used on this platform — we set `elsa.SDL = false` so OCEmu skips the
 FFI/audio path entirely — but it is retained for parity with upstream.
+
+## Local patch to vendored OCEmu
+
+`third_party/OCEmu/src/component/ocemu.lua` carries one change: the helper
+filesystem it creates at boot is now given an explicit capacity.
+
+Without one, `component/filesystem.lua` applies `size = size or math.huge`, so
+that volume reported infinite space. Installers pick a target with
+`if proxy.spaceTotal() >= 2 * 1024 * 1024 then ... break end` and never recheck
+writability, so this read-only helper volume won the race against every real
+disk and the first `open(path, "wb")` failed. This is the only modification made
+to the vendored tree; everything else is upstream as fetched.

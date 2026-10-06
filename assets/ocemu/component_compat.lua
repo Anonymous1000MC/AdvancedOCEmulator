@@ -174,11 +174,18 @@ return function(env)
     -- Only substitute when the component really does answer with infinity, so a
     -- properly sized volume keeps its own number.
     if t == "filesystem" and key == "spaceTotal" then
+      local kUnknownCapacity = 64 * 1024 * 1024
       return function()
         local total = stripStatus(invoke(address, "spaceTotal"))
         if type(total) ~= "number" or total == math.huge or total <= 0 then
-          return 64 * 1024 * 1024
+          total = kUnknownCapacity
         end
+        -- Deliberately NOT keyed on isReadOnly: OCEmu's settings.lua has a
+        -- one-time config migration that copies the *label* into the readonly
+        -- field (v[6] = v[5]), so isReadOnly reports true for volumes that are
+        -- perfectly writable, and false for ones that are not. Keying off it
+        -- would clamp every volume. The root cause is fixed where it belongs,
+        -- in component/ocemu.lua; this is only a floor for unknown sizes.
         return total
       end
     end
@@ -202,11 +209,13 @@ return function(env)
           return false
         end
       end
+      -- Must NOT go through stripStatus: it treats a lone `true` as a status and
+      -- drops it, which is exactly why this always used to answer nothing and we
+      -- hardcoded false. Report whatever the component actually says.
       return function()
-        -- Without a working isReadOnly, report writable: the answer only steers
-        -- which filesystem getBootAddress picks, and that is resolved by probing
-        -- for /init.lua instead.
-        return false
+        local ok, ro = pcall(invoke, address, "isReadOnly")
+        if not ok or ro == nil then return false end
+        return ro and true or false
       end
     end
     local fn = function(...) return stripStatus(invoke(address, key, ...)) end

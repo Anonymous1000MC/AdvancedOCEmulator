@@ -1,7 +1,14 @@
 -- ocemu component
 
 -- TODO: Remove this eventually
-component.connect("filesystem", gen_uuid(), -1, "customlua/ocemu", "ocemu", true, 5)
+component.connect("filesystem", gen_uuid(), -1, "customlua/ocemu", "ocemu", true, 5,
+	-- LOCAL PATCH (AdvancedOCEmulator): a capacity is required here.
+	-- Without one, filesystem.lua falls back to `size = size or math.huge`, so this
+	-- read-only helper volume advertised infinite space and won the
+	-- `spaceTotal() >= 2 * 1024 * 1024` install-target race against every real
+	-- disk. The installer then failed its first open(path, "wb") with
+	-- "File opening failed". It is a small Lua payload, not a disk.
+	524288)
 
 local components = settings.components
 

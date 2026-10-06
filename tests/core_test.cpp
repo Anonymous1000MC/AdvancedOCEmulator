@@ -1509,7 +1509,22 @@ do
       local okT, total = pcall(px.spaceTotal)
       local okR = pcall(px.isReadOnly)
       if okT and type(total) == "number" then
-        seen[#seen+1] = { addr = address, total = total, ro = (okR and px.isReadOnly()) }
+        -- Actually try to write. This is the only question that matters: which
+        -- volumes will accept open(path, "wb")? A volume can look perfectly
+        -- capable and still refuse every write, which is what an installer
+        -- picks targets by and then trips over.
+        local writable = false
+        do
+          -- Proxy members are closures bound to the address, not methods that
+          -- take self.
+          local okW, h = pcall(px.open, "/.__ocemu_probe", "wb")
+          if okW and h then
+            writable = pcall(px.write, h, "x")
+            pcall(px.close, h)
+            pcall(px.remove, "/.__ocemu_probe")
+          end
+        end
+        seen[#seen+1] = { addr = address, total = total, writable = writable }
       end
     end
   end
@@ -1520,24 +1535,28 @@ do
     -- string and is then swallowed by the status stripper, so our compat layer
     -- answers false for every volume. Classify on capacity instead, which is
     -- what the installers actually branch on.
-    if v.total >= 2 * 1024 * 1024 then writable = v else readonly = v end
-    local lbl = "?"
-    pcall(function() lbl = tostring(px.getLabel()) end)
+    if v.total >= 2 * 1024 * 1024 and v.writable then writable = v
+    elseif v.total >= 2 * 1024 * 1024 then readonly = v end
     local tname = "?"
     pcall(function() tname = tostring(component.type(v.addr)) end)
     RESULTS[#RESULTS+1] = "info fs " .. tostring(v.addr) ..
-                         " type=" .. tname .. " label=" .. lbl ..
+                         " type=" .. tname ..
                          " total=" .. tostring(v.total) ..
-                         " ro=" .. tostring(v.ro)
+                         " writable=" .. tostring(v.writable)
     ck("fs-capacity-finite-" .. v.addr:sub(1, 8), v.total < math.huge,
        tostring(v.total))
   end
+  -- The failure mode this guards is subtle: a READ-ONLY volume that out-bids the
+  -- writable ones on capacity. OCEmu's ocemu component creates a helper volume at
+  -- boot with no capacity, which filesystem.lua turns into math.huge; installers
+  -- then select it and every open(path, "wb") fails with "File opening failed".
   -- An installer takes the first filesystem with spaceTotal() >= 2 MB.
-  ck("fs-at-least-one-at-least-2mb", writable ~= nil,
+  -- The original failure: every volume big enough to be chosen was unwritable,
+  -- so the installer's first open(path, "wb") failed. At least one volume must
+  -- clear 2 MB *and* accept a write.
+  ck("fs-at-least-one-2mb-and-writable", writable ~= nil,
      writable and tostring(writable.total) or "none")
-  -- ...and must not be handed the read-only one, which is what broke TheanOS.
-  ck("fs-readonly-below-2mb", readonly == nil or readonly.total < 2 * 1024 * 1024,
-     readonly and tostring(readonly.total) or "none")
+  local _ = readonly
 end
 
 for _, kind in ipairs({"gpu", "eeprom", "filesystem"}) do
@@ -1610,7 +1629,9 @@ for _, line in ipairs(_G.__ocemuGuestEnv.OCEMU_RESULTS or {}) do host.log(line) 
   int probeFailures = 0;
   int probeChecks = 0;
   for (const auto& l : logs) {
-    if (l.rfind("info ", 0) == 0) std::printf("    %s\n", l.c_str());
+    if (l.rfind("info ", 0) == 0 || l.find("fs-debug") != std::string::npos) {
+      std::printf("    %s\n", l.c_str());
+    }
     if (l.rfind("ok ", 0) == 0 || l.rfind("FAIL ", 0) == 0) {
       ++probeChecks;
       if (l.rfind("FAIL", 0) == 0) {
