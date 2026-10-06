@@ -1210,12 +1210,24 @@ std::vector<ComponentSpec> OcEmuHost::buildComponentList(int tier, bool internet
 
   // Read-only OpenOS distribution, writable machine (labelled "OpenOS"), and
   // tmpfs. The writable one is our existing install.
+  //
+  // The trailing number is the filesystem's CAPACITY, and it has to be there.
+  // filesystem.lua does `size = size or math.huge`, so with no capacity every
+  // volume reported spaceTotal() == math.huge - including the read-only
+  // distribution. Installers that pick a target with
+  // `if proxy.spaceTotal() >= 2 * 1024 * 1024 then ... break end` therefore
+  // selected the read-only image, and every subsequent open(..., "wb") failed
+  // with "File opening failed". That is what stopped TheanOS's installer on its
+  // very first download (Libraries/Event.lua).
+  //
+  // Sizes are finite on purpose: obj.write refuses a write that would exceed
+  // them, which is how real drives behave.
   add("filesystem", "f57aa5ca-dafa-4dbd-a147-f89bc1eee113", 7,
-      {"loot/openos", "openos", "true", "1"});
+      {"loot/openos", "openos", "true", "1", "524288"});            // 512 KiB, read-only
   add("filesystem", "058f63e0-8939-490f-a096-ab41858d556b", 5,
-      {"nil", "OpenOS", "false", "4"});
+      {"nil", "OpenOS", "false", "4", "4294967296"});              // 4 GiB, writable
   add("filesystem", "e57878df-048c-4312-a6e6-d46da38be998", -1,
-      {"tmpfs", "tmpfs", "false", "5"});
+      {"tmpfs", "tmpfs", "false", "5", "67108864"});                // 64 MiB
 
   if (internetCard) add("internet", "06cd4b0a-5a83-41f6-9af2-630d7d4da583", 2, {});
 

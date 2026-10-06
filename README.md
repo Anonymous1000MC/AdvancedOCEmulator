@@ -229,6 +229,10 @@ OCEmu's `sound_card.lua` is a stub: every method is `--STUB`, and the file calls
   machine, so there is nothing to transmit to and wireless is inert.
 - **Drive has no disk.** The `drive` component mounts empty; there is no UI to
   insert one.
+- **`filesystem.isReadOnly()` always answers `false`.** OCEmu passes the flag
+  through as a string, which our status stripper then swallows, so the compat
+  layer hardcodes the answer. Anything that branches on a read-only volume to
+  choose an install target will misjudge it.
 - **Rendering is not accelerated.** The screen is composited on the CPU into one
   texture, which is fast enough at tier 3 but is not what a real GPU path does.
 - **Debugger.** OCEmu's debugger is not wired to our host, so there is no

@@ -1496,6 +1496,50 @@ end
 do
 end
 
+-- filesystem.spaceTotal() must be a real number, and the read-only OpenOS
+-- distribution must NOT look like a 2 MB+ writable disk. With no capacity in
+-- the component list, filesystem.lua falls back to math.huge and every volume
+-- claims to be infinite; installers that pick a target by capacity then select
+-- the read-only image and every write fails.
+do
+  local seen = {}
+  for address in component.list("filesystem") do
+    local okP, px = pcall(component.proxy, address)
+    if okP and type(px) == "table" then
+      local okT, total = pcall(px.spaceTotal)
+      local okR = pcall(px.isReadOnly)
+      if okT and type(total) == "number" then
+        seen[#seen+1] = { addr = address, total = total, ro = (okR and px.isReadOnly()) }
+      end
+    end
+  end
+  local writable, readonly = nil, nil
+  for _, v in ipairs(seen) do
+    -- Note: isReadOnly cannot be trusted here. OCEmu's filesystem.isReadOnly
+    -- returns the `readonly` constructor value, which reaches this host as a
+    -- string and is then swallowed by the status stripper, so our compat layer
+    -- answers false for every volume. Classify on capacity instead, which is
+    -- what the installers actually branch on.
+    if v.total >= 2 * 1024 * 1024 then writable = v else readonly = v end
+    local lbl = "?"
+    pcall(function() lbl = tostring(px.getLabel()) end)
+    local tname = "?"
+    pcall(function() tname = tostring(component.type(v.addr)) end)
+    RESULTS[#RESULTS+1] = "info fs " .. tostring(v.addr) ..
+                         " type=" .. tname .. " label=" .. lbl ..
+                         " total=" .. tostring(v.total) ..
+                         " ro=" .. tostring(v.ro)
+    ck("fs-capacity-finite-" .. v.addr:sub(1, 8), v.total < math.huge,
+       tostring(v.total))
+  end
+  -- An installer takes the first filesystem with spaceTotal() >= 2 MB.
+  ck("fs-at-least-one-at-least-2mb", writable ~= nil,
+     writable and tostring(writable.total) or "none")
+  -- ...and must not be handed the read-only one, which is what broke TheanOS.
+  ck("fs-readonly-below-2mb", readonly == nil or readonly.total < 2 * 1024 * 1024,
+     readonly and tostring(readonly.total) or "none")
+end
+
 for _, kind in ipairs({"gpu", "eeprom", "filesystem"}) do
   ck(kind .. "-found", component.list(kind)() ~= nil)
 end
@@ -1566,6 +1610,7 @@ for _, line in ipairs(_G.__ocemuGuestEnv.OCEMU_RESULTS or {}) do host.log(line) 
   int probeFailures = 0;
   int probeChecks = 0;
   for (const auto& l : logs) {
+    if (l.rfind("info ", 0) == 0) std::printf("    %s\n", l.c_str());
     if (l.rfind("ok ", 0) == 0 || l.rfind("FAIL ", 0) == 0) {
       ++probeChecks;
       if (l.rfind("FAIL", 0) == 0) {

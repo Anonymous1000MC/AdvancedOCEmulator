@@ -164,6 +164,25 @@ return function(env)
     -- fs.exists once per candidate path and treats "no value" as "missing", so
     -- every require fails and OpenOS cannot boot. open() does work, so answer
     -- exists() by attempting an open and closing it again.
+    -- OCEmu's filesystem.lua does `size = size or math.huge`, so a volume with no
+    -- explicit capacity reports spaceTotal() == math.huge. No real drive is
+    -- infinite, and installers depend on this number: they choose an install
+    -- target with `if proxy.spaceTotal() >= 2 * 1024 * 1024 then ... break end`,
+    -- which will happily pick a volume that cannot be written to and then fail
+    -- every open(..., "wb") with "File opening failed".
+    --
+    -- Only substitute when the component really does answer with infinity, so a
+    -- properly sized volume keeps its own number.
+    if t == "filesystem" and key == "spaceTotal" then
+      return function()
+        local total = stripStatus(invoke(address, "spaceTotal"))
+        if type(total) ~= "number" or total == math.huge or total <= 0 then
+          return 64 * 1024 * 1024
+        end
+        return total
+      end
+    end
+
     if t == "filesystem" and (key == "exists" or key == "isReadOnly") then
       local function fsOpen(path, mode)
         local handle = invoke(address, "open", path, mode or "r")
