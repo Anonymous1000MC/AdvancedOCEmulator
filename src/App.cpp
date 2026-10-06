@@ -1096,9 +1096,15 @@ void App::processEvents() {
             } else {
               selecting_ = false;
             }
+          }
+          // Report every button to the guest, not just the left one inside a
+          // selection: this used to sit inside the left-click branch, so right
+          // and middle were never held and a click outside the grid was lost.
+          if (ocEmuMode_) {
             if (OcScreen* oc = OcScreen::active()) {
               const int b = ev.button.button == SDL_BUTTON_LEFT ? 1
-                             : ev.button.button == SDL_BUTTON_RIGHT ? 2 : 3;
+                             : ev.button.button == SDL_BUTTON_RIGHT ? 2
+                             : 3;
               oc->setMouseButton(b, true);
             }
           }
@@ -1268,7 +1274,16 @@ int App::run() {
     }
     if (quitRequested_) {
       quitRequested_ = false;
-      running_ = false;
+      // The guest asked to quit (computer.shutdown(false)). That stops the
+      // machine, not the emulator: a guest error or a shutdown path used to
+      // take the whole window down, leaving nothing to read the error from.
+      const std::string msg = "guest requested shutdown; machine stopped";
+      logLines_.push_back("[alert] " + msg);
+      alerts_.push_back(msg);
+      showConsole_ = true;
+      if (ocemu_ != nullptr && ocemu_->machine() != nullptr) {
+        ocemu_->machine()->stop();
+      }
     }
 
     // --- render ---

@@ -344,7 +344,30 @@ void OcScreen::writeForTest(int x, int y, std::uint32_t value) {
   c.fgPalette = fgPalette_;
   c.bgPalette = bgPalette_;
   c.continuation = false;
-  markWideTails();
+
+  // Maintain the wide-glyph tail in O(1) instead of rescanning the whole
+  // screen. This used to call markWideTails() per cell written, which is O(cells)
+  // per character: drawing a 160-column line scanned 8000 cells 160 times, and
+  // anything animated redrew the screen every frame. That dominated frame time.
+  //
+  // The pair is self-consistent: a wide glyph claims the cell to its right, and
+  // a narrow one releases it. That also clears a stale tail left behind when a
+  // wide glyph is overwritten.
+  if (cx + 1 < width_) {
+    Cell& next = cells_[static_cast<std::size_t>(cy) *
+                             static_cast<std::size_t>(width_) +
+                         static_cast<std::size_t>(cx + 1)];
+    if (font_ != nullptr && font_->loaded() && font_->isWide(value)) {
+      next.value = 0;
+      next.fg = fgColor_;
+      next.bg = bgColor_;
+      next.fgPalette = fgPalette_;
+      next.bgPalette = bgPalette_;
+      next.continuation = true;
+    } else {
+      next.continuation = false;
+    }
+  }
   touch();
 }
 
@@ -597,7 +620,6 @@ void OcScreen::writeStringForTest(int x, int y, const char* text, bool vertical)
       if (cx >= width_) break;
     }
   }
-  markWideTails();
   touch();
 }
 

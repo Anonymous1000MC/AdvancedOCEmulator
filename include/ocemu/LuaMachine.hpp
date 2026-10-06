@@ -112,6 +112,12 @@ class LuaMachine {
   bool guarded(const std::function<void()>& fn);
 
   [[nodiscard]] MachineState state() const { return state_; }
+
+  // Stops the VM without discarding the state, so the UI survives a guest
+  // shutdown and the console can still show why. Reboot() recovers.
+  void stop() {
+    if (state_ == MachineState::Running) state_ = MachineState::Stopped;
+  }
   [[nodiscard]] bool alive() const { return state_ == MachineState::Running && L_ != nullptr; }
   [[nodiscard]] lua_State* L() const { return L_; }
   // The allocator actually backing the Lua state. The host owns it and passes
