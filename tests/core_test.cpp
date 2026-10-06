@@ -1312,6 +1312,16 @@ OCEMU_RESULTS = RESULTS
   // Tick generously: the screen must be captured AFTER the shell has had time
   // to react to the keystrokes.
   // OpenOS runs twelve boot scripts before the shell appears; give it room.
+  // TheanOS's installer bounds its GitHub connect poll with
+  // `while computer.uptime() < deadline`. If uptime stood still, that loop
+  // could never terminate, so capture it before the pump to compare against.
+  std::string preErr;
+  if (!machine.runChunkIn(R"LUA(
+OCEMU_UPTIME_0 = computer.uptime()
+)LUA", "=uptime_pre", "__ocemuGuestEnv", &preErr)) {
+    std::printf("  FAIL: uptime pre-capture: %s\n", preErr.c_str());
+  }
+
   for (int i = 0; i < 60000; ++i) {
     host.update(1.0 / 60.0);
   }
@@ -1325,8 +1335,32 @@ OCEMU_RESULTS = RESULTS
   const std::string probeResult =
       machine.runChunkIn(probe, "=openos_probe", "__ocemuGuestEnv", &err) ? "ok" : err;
 
-  // Read the probe's results back out of the sandbox.
+  // computer.uptime() has to be read inside the sandbox again: the host
+  // context has no `computer`. The installer's connect poll is
+  // `while computer.uptime() < deadline`, so a clock that stands still would
+  // hang it forever.
   if (probeResult == "ok") {
+    std::string uptimeErr;
+    machine.runChunkIn(R"LUA(
+local u0 = OCEMU_UPTIME_0
+local u1 = computer.uptime()
+if type(u0) ~= "number" then
+  OCEMU_RESULTS[#OCEMU_RESULTS+1] = "FAIL uptime-readable (" .. tostring(u0) .. ")"
+elseif type(u1) ~= "number" then
+  OCEMU_RESULTS[#OCEMU_RESULTS+1] = "FAIL uptime-not-number (" .. tostring(u1) .. ")"
+elseif u1 > u0 then
+  OCEMU_RESULTS[#OCEMU_RESULTS+1] = "ok uptime-advances (" ..
+    string.format("%.3f", u0) .. " -> " .. string.format("%.3f", u1) .. ", " ..
+    string.format("%.1f", u1 - u0) .. "s over the pump)"
+else
+  OCEMU_RESULTS[#OCEMU_RESULTS+1] = "FAIL uptime-stuck (" ..
+    string.format("%.3f", u0) .. " -> " .. string.format("%.3f", u1) .. ")"
+end
+)LUA", "=uptime_probe", "__ocemuGuestEnv", &uptimeErr);
+    if (!uptimeErr.empty()) {
+      logs.push_back("FAIL uptime-probe (" + uptimeErr + ")");
+    }
+
     machine.runChunk(R"LUA(
 for _, line in ipairs(_G.__ocemuGuestEnv.OCEMU_RESULTS or {}) do host.log(line) end
 )LUA", "=probe_results", &err);
