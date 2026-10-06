@@ -30,6 +30,8 @@ namespace ocemu {
 
 class App {
  public:
+  // Exposed so the pointer-signal helper can reach the machine. Read-only.
+  [[nodiscard]] OcEmuHost* ocEmuHost() const { return ocemu_.get(); }
   App();
   ~App();
   App(const App&) = delete;
@@ -122,6 +124,8 @@ class App {
   void destroyScreenTexture();
   // Selection, in cell coordinates, inclusive. anchor is where the drag began.
   bool selecting_ = false;
+  // Which button is currently held down, so motion can be reported as a drag.
+  int dragButton_ = 0;
   int selAnchorX_ = 0, selAnchorY_ = 0;
   int selX0_ = 0, selY0_ = 0, selX1_ = 0, selY1_ = 0;
 
@@ -135,8 +139,6 @@ class App {
   bool guestComponentsQueried_ = false;
   std::string guestRamBytes_;
   bool pendingGuestQuery_ = false;
-  std::string selectedText() const;
-  void copySelection();
   void pasteClipboard();
 
   std::uint64_t lastOcRevision_ = 0;

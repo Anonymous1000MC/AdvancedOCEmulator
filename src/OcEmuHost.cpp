@@ -11,6 +11,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <deque>
 #include <chrono>
 #include <cstdio>
 #include <cctype>
@@ -171,6 +172,18 @@ static int kbModifier(lua_State* L) {
 // The guest's keyboard address, needed to tag queued events the way
 // keyboard_sdl2.lua does (`{type = "key_down", addr = address, code = ...}`).
 static const char* g_kbAddress = nullptr;
+
+// The screen's address, needed to attribute pointer signals to a component.
+static std::string g_screenAddress;
+
+struct PointerEvent {
+  const char* type;  // "touch", "drag", "drop", "scroll"
+  int x, y, a, b;    // cells (0-based) plus button / wheel deltas
+};
+// Queued host-side and drained in update(). Never inject into Lua from the SDL
+// event handler: that runs inside the ImGui frame, and a fault there longjmps
+// through ImGui's C++ frames.
+static std::deque<PointerEvent> g_pointerEvents;
 
 // Appends one entry to OCEmu's host-global `kbdcodes` queue. main.lua's
 // elsa.update drains ONE entry per tick and re-shapes it into
@@ -892,6 +905,46 @@ void OcEmuHost::update(double dtSeconds) {
   }
   lua_pop(L, 1);
 
+  // Pointer signals.
+  //
+  // Real OpenComputers' screen component emits touch/drag/drop/scroll signals.
+  // OCEmu's does not, and neither did ours, so every signal-driven GUI stayed
+  // blind even though screen.getMousePosition() answered correctly - GUIs wait
+  // on computer.pullSignal(), they do not poll the position.
+  //
+  // The shape must match the key events OCEmu builds in main.lua:
+  //   {type, addr, char, code}
+  // so the address occupies the second field and the coordinates the third and
+  // fourth, which is what GUI code reads as x and y.
+  if (!g_pointerEvents.empty()) {
+    lua_getglobal(L, "machine");
+    if (lua_istable(L, -1)) {
+      lua_getfield(L, -1, "signals");
+      if (lua_istable(L, -1)) {
+        for (const auto& ev : g_pointerEvents) {
+          lua_newtable(L);
+          lua_pushstring(L, ev.type);
+          lua_setfield(L, -2, "type");
+          lua_pushstring(L, g_screenAddress.c_str());
+          lua_setfield(L, -2, "addr");
+          // OpenComputers reports 1-based cells.
+          lua_pushinteger(L, ev.x + 1);
+          lua_setfield(L, -2, "char");
+          lua_pushinteger(L, ev.y + 1);
+          lua_setfield(L, -2, "code");
+          lua_pushinteger(L, ev.a);
+          lua_setfield(L, -2, "button");
+          lua_pushinteger(L, ev.b);
+          lua_setfield(L, -2, "scroll");
+          lua_rawseti(L, -2, static_cast<lua_Integer>(lua_rawlen(L, -1) + 1));
+        }
+        g_pointerEvents.clear();
+      }
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+  }
+
   // Dispatch runs guest code, so it must be inside the VM's panic guard -- and
   // must not run at all once the guest has faulted.
   if (liveState() == nullptr) return;
@@ -1152,6 +1205,13 @@ void OcEmuHost::install(lua_State* L, std::string ocsrcDir, std::string machineD
 
 bool OcEmuHost::isNativeComponent(const std::string& type) {
   return type == kNativeScreen || type == kNativeKeyboard;
+}
+
+void OcEmuHost::queuePointerEvent(const char* type, int x, int y, int a, int b) {
+  // Bounded so a held button with a spammy mouse cannot grow this without end.
+  constexpr std::size_t kMaxQueued = 256;
+  if (g_pointerEvents.size() >= kMaxQueued) g_pointerEvents.pop_front();
+  g_pointerEvents.push_back(PointerEvent{type, x, y, a, b});
 }
 
 void OcEmuHost::applyRamSpec(int ramKb) {

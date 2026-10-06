@@ -54,8 +54,9 @@ Boot, and OpenOS comes up on its own. Type at it.
 | Key | Action |
 |---|---|
 | any key / text | goes to the guest |
-| `Ctrl+C` / `Ctrl+Shift+C` | copy the mouse selection |
-| `Ctrl+V` / `Ctrl+Shift+V`, middle-click | paste through as real keystrokes |
+| `Ctrl+V` / `Ctrl+Shift+V`, middle-click | paste the **host** clipboard into the guest, as real keystrokes |
+
+Clipboard flows one way only: host to guest. Copying the guest's selection back out is not wired up, so `Ctrl+C` reaches the guest untouched and the host clipboard is never silently overwritten by guest text.
 | drag | select text |
 
 **Component Manager** (the floating panel) configures the machine and applies it
@@ -195,7 +196,7 @@ Provided natively:
 
 | Component | Notes |
 | --- | --- |
-| `screen` | Replaces `screen_sdl2.lua`. O(1) writes, OC's own bitmap font, palette, depth, keycodes, mouse and touch. |
+| `screen` | Replaces `screen_sdl2.lua`. O(1) writes, OC's own bitmap font, palette, depth, keycodes, and a pointer: `getMousePosition`/`getMouseButton` plus the `touch`/`drag`/`drop`/`scroll` signals real OpenComputers emits. |
 | `keyboard` | Replaces `keyboard_sdl2.lua`. Real SDL key events, printable text, modifiers. |
 | `sound` | Replaces `sound_card.lua`. See below. |
 | `data` | In-memory key/value store (OCEmu's `data.lua`). |
@@ -229,6 +230,8 @@ OCEmu's `sound_card.lua` is a stub: every method is `--STUB`, and the file calls
   machine, so there is nothing to transmit to and wireless is inert.
 - **Drive has no disk.** The `drive` component mounts empty; there is no UI to
   insert one.
+- **Pointer events are click-and-drag only.** No right-click menus beyond button
+  2 being reported, and no multi-touch.
 - **`filesystem.isReadOnly()` always answers `false`.** OCEmu passes the flag
   through as a string, which our status stripper then swallows, so the compat
   layer hardcodes the answer. Anything that branches on a read-only volume to

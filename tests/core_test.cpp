@@ -1423,6 +1423,27 @@ if s then
   local okO, oob = try(component.cecinvoke, s, "get", 9999, 9999)
   ck("get-out-of-range-safe", okO and type(oob) == "string", okO and type(oob) or "error")
 
+  -- Pointer API. Real OpenComputers has had screen.getMousePosition() and
+  -- getMouseButton() since 1.7; OCEmu's screen_sdl2 implements neither, so these
+  -- are ours and have to actually be reachable from the guest.
+  -- `component.list("screen")()` returns an ADDRESS, so a proxy is needed to
+  -- call methods on it - this is the form real guest code uses.
+  local okPx, screen = pcall(function() return component.proxy(s) end)
+  ck("screen-proxy-built", okPx and type(screen) == "table",
+     okPx and type(screen) or "error")
+  if okPx and type(screen) == "table" then
+    local okM, mx, my = try(screen.getMousePosition, screen)
+    ck("getMousePosition-returns-2", okM and type(mx) == "number" and type(my) == "number",
+       okM and (tostring(mx) .. "," .. tostring(my)) or "error")
+    ck("getMousePosition-in-range", okM and mx >= 0 and my >= 0 and mx <= 160 and my <= 50,
+       okM and (tostring(mx) .. "," .. tostring(my)) or "error")
+    for b = 0, 4 do
+      local okB, pressed = try(screen.getMouseButton, screen, b)
+      ck("getMouseButton-boolean-" .. b, okB and type(pressed) == "boolean",
+         okB and tostring(pressed) or "error")
+    end
+  end
+
   local okF, fg = try(component.cecinvoke, s, "getForeground")
   ck("getForeground-returns-number", okF and type(fg) == "number", okF and type(fg) or "error")
   local okB, _, isPal = try(component.cecinvoke, s, "getBackground")

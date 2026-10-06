@@ -83,6 +83,9 @@ class OcEmuHost {
   // Pass ramKb <= 0 for "no cap configured".
   void applyRamSpec(int ramKb);
 
+  // Queues a pointer signal for the guest. Coordinates are 0-based cells.
+  void queuePointerEvent(const char* type, int x, int y, int a = 0, int b = 0);
+
   // Needed so host-driven dispatches can run inside the VM's panic guard.
   void setMachine(LuaMachine* m) { machine_ = m; }
   // Diagnostics needs to ask the guest what it can actually see, so the host

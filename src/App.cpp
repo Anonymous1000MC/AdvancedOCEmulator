@@ -1018,6 +1018,24 @@ void App::destroyScreenTexture() {
   }
 }
 
+namespace {
+// OC's button numbering: 1 left, 2 right, 3 middle.
+int ocButton(int sdlButton) {
+  if (sdlButton == SDL_BUTTON_LEFT) return 1;
+  if (sdlButton == SDL_BUTTON_RIGHT) return 2;
+  return 3;
+}
+
+// Report a pointer event to the guest, but only when the cursor is over the
+// screen. OpenComputers uses 1-based cells, and signals rather than polling.
+void reportPointer(App* app, const char* type, int x, int y, int button,
+                   int scroll = 0, bool inside = true) {
+  if (app == nullptr || !inside) return;
+  OcEmuHost* host = app->ocEmuHost();
+  if (host != nullptr) host->queuePointerEvent(type, x, y, button, scroll);
+}
+}  // namespace
+
 bool App::cellAt(ImVec2 pos, int* col, int* row) const {
   if (!haveGrid_ || grid_.cellW <= 0.0f || grid_.cellH <= 0.0f) return false;
   const float fx = (pos.x - grid_.origin.x) / grid_.cellW;
@@ -1033,35 +1051,6 @@ bool App::cellAt(ImVec2 pos, int* col, int* row) const {
 
 // The selected block of text, with trailing spaces trimmed per line and
 // interior blank runs collapsed, the way a terminal selection reads.
-std::string App::selectedText() const {
-  OcScreen* oc = OcScreen::active();
-  if (oc == nullptr || oc->cells().empty()) return {};
-  const int cols = oc->width();
-  const auto& cells = oc->cells();
-
-  std::string out;
-  for (int y = selY0_; y <= selY1_; ++y) {
-    std::string line;
-    for (int x = selX0_; x <= selX1_; ++x) {
-      const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(cols) +
-                            static_cast<std::size_t>(x);
-      if (i >= cells.size()) break;
-      const std::uint32_t g = cells[i].value;
-      line.push_back(g == 0 ? ' ' : static_cast<char>(g));
-    }
-    while (!line.empty() && line.back() == ' ') line.pop_back();
-    if (y != selY0_) line.push_back('\n');
-    out += line;
-  }
-  return out;
-}
-
-void App::copySelection() {
-  const std::string text = selectedText();
-  if (text.empty()) return;
-  SDL_SetClipboardText(text.c_str());
-}
-
 void App::pasteClipboard() {
   if (ocemu_ == nullptr) return;
   char* clip = SDL_GetClipboardText();
@@ -1105,6 +1094,15 @@ void App::processEvents() {
           // printable characters go through as-is.
           if (ev.text.text[0] != '\0') ocemu_->pushKey(std::string(1, ev.text.text[0]));
           break;
+        case SDL_MOUSEWHEEL: {
+          if (ocEmuMode_) {
+            int c = 0, r = 0;
+            const bool inside =
+                cellAt(ImVec2(ev.wheel.mouseX, ev.wheel.mouseY), &c, &r);
+            reportPointer(this, "scroll", c, r, 0, ev.wheel.y, inside);
+          }
+          break;
+        }
         case SDL_MOUSEBUTTONDOWN:
           if (ev.button.button == SDL_BUTTON_MIDDLE) {
             pasteClipboard();
@@ -1126,23 +1124,32 @@ void App::processEvents() {
           // and middle were never held and a click outside the grid was lost.
           if (ocEmuMode_) {
             if (OcScreen* oc = OcScreen::active()) {
-              const int b = ev.button.button == SDL_BUTTON_LEFT ? 1
-                             : ev.button.button == SDL_BUTTON_RIGHT ? 2
-                             : 3;
+              const int b = ocButton(ev.button.button);
               oc->setMouseButton(b, true);
+              int c = 0, r = 0;
+              const bool inside =
+                  cellAt(ImVec2(ev.button.x, ev.button.y), &c, &r);
+              if (inside) oc->setMouseCell(c, r);
+              reportPointer(this, "touch", c, r, b, 0, inside);
+              if (b == 1) dragButton_ = b;
             }
           }
           break;
-        case SDL_MOUSEBUTTONUP:
+        case SDL_MOUSEBUTTONUP: {
           if (ev.button.button == SDL_BUTTON_LEFT) selecting_ = false;
           if (ocEmuMode_) {
             if (OcScreen* oc = OcScreen::active()) {
-              const int b = ev.button.button == SDL_BUTTON_LEFT ? 1
-                             : ev.button.button == SDL_BUTTON_RIGHT ? 2 : 3;
+              const int b = ocButton(ev.button.button);
               oc->setMouseButton(b, false);
+              int c = 0, r = 0;
+              const bool inside =
+                  cellAt(ImVec2(ev.button.x, ev.button.y), &c, &r);
+              reportPointer(this, "drop", c, r, b, 0, inside);
+              if (b == dragButton_) dragButton_ = 0;
             }
           }
           break;
+        }
         case SDL_MOUSEMOTION:
           // Keep the guest's pointer in sync with the host cursor. Real
           // OpenComputers exposes screen.getMousePosition(); without this a GUI
@@ -1150,10 +1157,17 @@ void App::processEvents() {
           if (ocEmuMode_) {
             if (OcScreen* oc = OcScreen::active()) {
               int c = 0, r = 0;
-              if (cellAt(ImVec2(ev.motion.x, ev.motion.y), &c, &r)) {
+              const bool inside =
+                  cellAt(ImVec2(ev.motion.x, ev.motion.y), &c, &r);
+              if (inside) {
                 oc->setMouseCell(c, r);
               } else {
                 oc->setMouseCell(-1, -1);
+              }
+              // A held button becomes a drag, which is what GUIs use for
+              // sliders and for dragging-and-dropping.
+              if (dragButton_ != 0 && inside) {
+                reportPointer(this, "drag", c, r, dragButton_, 0, true);
               }
             }
           }
@@ -1191,11 +1205,12 @@ void App::processEvents() {
             const std::uint16_t mod = SDL_GetModState();
             const bool ctrl = (mod & KMOD_CTRL) != 0;
             const bool shift = (mod & KMOD_SHIFT) != 0;
-            const bool copy = (ctrl && key == "c") || (ctrl && shift && key == "C");
+            // One direction only: the HOST clipboard is pasted INTO the guest.
+            // Copying the guest's selection back out is deliberately not wired
+            // up, so Ctrl+C reaches the guest untouched and the host clipboard
+            // is never silently overwritten by guest text.
             const bool paste = (ctrl && key == "v") || (ctrl && shift && key == "V");
-            if (copy) {
-              copySelection();
-            } else if (paste) {
+            if (paste) {
               pasteClipboard();
             } else {
               const bool printable = ev.key.keysym.sym >= 32 && ev.key.keysym.sym < 127;
