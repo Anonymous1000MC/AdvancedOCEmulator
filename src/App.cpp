@@ -295,7 +295,22 @@ bool App::bootOcEmu() {
     }
   }
 
-  lua_->attach(LuaContext{});
+  // The full context, not an empty one. This same machine becomes the OpenComputers
+  // machine a few lines below, so attaching it without an allocator sent the
+  // entire guest heap to LuaMachine::ownedAllocator_: RAM read 0, and the cap
+  // the user sets in the Component Manager was never enforced.
+  {
+    LuaContext ctx;
+    ctx.screen = &screen_;
+    ctx.allocator = &allocator_;
+    ctx.internet = &internet_;
+    ctx.alerts = &alerts_;
+    ctx.logLines = &logLines_;
+    ctx.rebootRequested = &rebootRequested_;
+    ctx.quitRequested = &quitRequested_;
+    lua_->attach(ctx);
+  }
+
   std::string err;
   if (!lua_->reboot(stubRom.string(), &err)) {
     alerts_.push_back("VM boot: " + err);
@@ -632,33 +647,24 @@ void App::refreshGuestComponents() {
     guestComponentsError_ = "no machine";
     return;
   }
-  // Run inside the guest sandbox, where `component` exists, and stash the
-  // answer where the host can read it back.
+  // One chunk, run inside the guest sandbox and returned directly. The
+  // previous two-step version stored into `_G.__ocemuGuestEnv` from inside the
+  // sandbox, where that name is simply nil - it is a *host* global, so the
+  // guest refers to its own globals directly.
   const std::string chunk = R"LUA(
 local seen = {}
 for t in pairs(component.list()) do seen[#seen+1] = t end
 table.sort(seen)
-_G.__ocemuGuestEnv.OCEMU_DIAG_COMPONENTS = seen
+return table.concat(seen, "\n")
 )LUA";
   std::string err;
-  if (!ocemu_->machine()->runChunkIn(chunk, "=ocemu_diag_components",
-                                    "__ocemuGuestEnv", &err)) {
-    guestComponentsError_ = err;
-    return;
-  }
-  const std::string read = R"LUA(
-local out = {}
-for _, t in ipairs(_G.__ocemuGuestEnv.OCEMU_DIAG_COMPONENTS or {}) do
-  out[#out+1] = t
-end
-return table.concat(out, "\n")
-)LUA";
   std::string joined;
-  if (!ocemu_->machine()->runChunkString(read, "=ocemu_diag_read", nullptr, &joined,
-                                         &err)) {
+  if (!ocemu_->machine()->runChunkString(chunk, "=ocemu_diag_components",
+                                         "__ocemuGuestEnv", &joined, &err)) {
     guestComponentsError_ = err;
     return;
   }
+
   std::size_t start = 0;
   while (start <= joined.size()) {
     const std::size_t nl = joined.find('\n', start);
