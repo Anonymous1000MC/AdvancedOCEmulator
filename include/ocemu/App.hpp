@@ -134,6 +134,7 @@ class App {
   std::string guestComponentsError_;
   bool guestComponentsQueried_ = false;
   std::string guestRamBytes_;
+  bool pendingGuestQuery_ = false;
   std::string selectedText() const;
   void copySelection();
   void pasteClipboard();

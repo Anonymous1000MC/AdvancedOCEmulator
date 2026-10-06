@@ -715,7 +715,14 @@ void App::drawConsole() {
   const bool atBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
   if (ImGui::BeginChild("##console_lines", ImVec2(0.0f, -46.0f), childFlags)) {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 1.0f));
-    for (const auto& l : logLines_) {
+    // Only the tail. Boot spews thousands of lines and this window redraws
+    // every frame, so rendering the whole log is what made opening it hang.
+    constexpr std::size_t kMaxVisible = 2000;
+    const std::size_t skip =
+        logLines_.size() > kMaxVisible ? logLines_.size() - kMaxVisible : 0;
+    if (skip != 0) ImGui::TextDisabled("... %zu earlier lines omitted", skip);
+    for (std::size_t i = skip; i < logLines_.size(); ++i) {
+      const std::string& l = logLines_[i];
       // Tag anything that looks like a failure so it stands out when scrolling.
       const bool bad = l.find("[alert]") != std::string::npos ||
                        l.find("error") != std::string::npos ||
@@ -834,7 +841,9 @@ void App::drawOverlay() {
         // that disagreement is the interesting bit, so show it.
         ImGui::Text("Emulator provides : %zu", specs.size());
 
-        if (ImGui::Button("Refresh guest view")) refreshGuestComponents();
+        // Deferred to update(): runChunkString can panic, and a longjmp out
+        // through ImGui's C++ frames is undefined behaviour.
+        if (ImGui::Button("Refresh guest view")) pendingGuestQuery_ = true;
         if (!guestComponentsError_.empty()) {
           ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f), "guest query failed: %s",
                              guestComponentsError_.c_str());
@@ -1272,6 +1281,11 @@ int App::run() {
         alerts_.push_back(config_.lastError());
       }
     }
+    if (pendingGuestQuery_) {
+      pendingGuestQuery_ = false;
+      refreshGuestComponents();
+    }
+
     if (quitRequested_) {
       quitRequested_ = false;
       // The guest asked to quit (computer.shutdown(false)). That stops the
