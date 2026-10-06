@@ -1086,6 +1086,101 @@ check("load-noenv",   fn2 ~= nil and fn2() == nil)
 //
 //  Skipped (reported, not failed) when OCEmu's sources are not present.
 // ---------------------------------------------------------------------------
+
+// Regression: a guest that faults during boot used to kill the emulator on the
+// NEXT frame, not report the error.
+//
+// OcEmuHost caches the lua_State* it was handed by install(). When the machine
+// faults or runs out of memory, reboot()'s recovery calls closeStateNoThrow(),
+// which frees that state and nulls the machine's pointer - but the host's cached
+// copy still pointed at freed memory. OcEmuHost::update() then ran
+// lua_getglobal() on it every frame and segfaulted inside liblua:
+//
+//   #1  lua_getglobal ()
+//   #2  ocemu::OcEmuHost::update(double) ()
+//
+// Force that teardown deterministically by starving the allocator, then tick.
+void testFaultedStateIsNotTouched() {
+  group("regression: faulted Lua state is never dereferenced");
+  const std::string ocSrc = findOcEmuSrc();
+  const std::string ocData = findOcEmuData();
+  if (!std::filesystem::exists(std::filesystem::path(ocSrc) / "main.lua")) {
+    std::printf("  SKIP: OCEmu sources not found at %s\n", ocSrc.c_str());
+    return;
+  }
+
+  OcEmuHost host;
+  ScreenBuffer screen;
+  MemoryAllocator allocator;
+  LuaMachine machine;
+  std::vector<std::string> alerts, logs;
+  bool rebootReq = false, quitReq = false;
+
+  screen.applyLimits(3, 3);
+  allocator.setInfinite(true);
+
+  HostInfo info;
+  info.gpuTier = 3;
+  info.screenTier = 3;
+  info.ramLimitKb = -1;
+  info.internetEnabled = false;
+  info.cols = 160;
+  info.rows = 50;
+  info.depth = 8;
+  machine.setHostInfo(info);
+
+  LuaContext ctx;
+  ctx.screen = &screen;
+  ctx.allocator = &allocator;
+  ctx.alerts = &alerts;
+  ctx.logLines = &logs;
+  ctx.rebootRequested = &rebootReq;
+  ctx.quitRequested = &quitReq;
+  machine.attach(ctx);
+
+  std::string cfgErr;
+  if (!host.syncOcEmuConfig(ocData, 3, false, &cfgErr)) {
+    std::printf("  FAIL: syncOcEmuConfig: %s\n", cfgErr.c_str());
+    ++g_failures;
+    return;
+  }
+
+  std::string err;
+  const std::string rom = writeTempRom("ocemu_test_fault.lua", "-- fault harness\n");
+  if (!machine.reboot(rom, &err)) {
+    std::printf("  FAIL: initial VM boot: %s\n", err.c_str());
+    ++g_failures;
+    return;
+  }
+  // This is what leaves the host holding a pointer to a state that is about to be
+  // freed.
+  host.install(machine.L(), ocSrc, ocData);
+  host.setMachine(&machine);
+  CHECK(machine.alive());
+
+  // Starve the allocator so lua_newstate cannot succeed. reboot() takes its
+  // recovery path, closes the state and reports OutOfMemory - exactly the
+  // teardown that used to leave the host with a dangling pointer.
+  allocator.setInfinite(false);
+  allocator.setLimitBytes(64);
+  allocator.clearOutOfMemory();
+
+  const std::string rom2 = writeTempRom("ocemu_test_fault2.lua", "local x = {}\n");
+  const bool rebooted = machine.reboot(rom2, &err);
+  allocator.setInfinite(true);
+  allocator.setLimitBytes(MemoryAllocator::bytesFromKb(-1));
+
+  CHECK(!rebooted);
+  CHECK(!machine.alive());
+  CHECK(machine.L() == nullptr);
+
+  // The host must refuse to touch the dead state. Before the fix this segfaulted
+  // on the very first call, taking the test binary down with it.
+  for (int i = 0; i < 240; ++i) host.update(1.0 / 60.0);
+  CHECK(machine.L() == nullptr);
+  std::printf("    survived 240 ticks with a dead Lua state\n");
+}
+
 void testOpenOsBoot() {
   group("integration: boot OpenOS (OCEmu Lua core)");
   namespace fs = std::filesystem;
@@ -1506,6 +1601,7 @@ int main() {
   testRebootIsClean();
   testHostTick();
   testElsaHost();
+  testFaultedStateIsNotTouched();
   testOpenOsBoot();
 
   std::printf("\n================\n%d checks, %d failure(s)\n", g_checks, g_failures);

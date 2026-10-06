@@ -870,14 +870,27 @@ void OcEmuHost::update(double dtSeconds) {
   // host global -- not the sandbox copy a Lua-side fix would reach.
   // machine.lua still bounds runaway guests with its own wall-clock deadline,
   // and the host gives each frame a bounded number of ticks.
-  lua_getglobal(L_, "machine");
-  if (lua_istable(L_, -1)) {
-    lua_pushnumber(L_, std::numeric_limits<double>::infinity());
-    lua_setfield(L_, -2, "callBudget");
-    lua_pushcfunction(L_, &OcEmuHost::luaConsumeCallBudget);
-    lua_setfield(L_, -2, "consumeCallBudget");
+  //
+  // `L_` is the lua_State* captured when install() ran. A fault or an out-of-
+  // memory condition tears the state down (LuaMachine::closeStateNoThrow), and
+  // that pointer is dangling from then on - touching it segfaults inside liblua,
+  // which is exactly what a guest that dies during boot used to do: the machine
+  // faulted once and the emulator died on the *next frame* rather than
+  // reporting the error.
+  //
+  // So take the live state and refuse to touch anything unless it is genuinely
+  // running. Reboot() re-installs and hands us a fresh state.
+  if (machine_ == nullptr || !machine_->alive()) return;
+  lua_State* const L = machine_->L();
+
+  lua_getglobal(L, "machine");
+  if (lua_istable(L, -1)) {
+    lua_pushnumber(L, std::numeric_limits<double>::infinity());
+    lua_setfield(L, -2, "callBudget");
+    lua_pushcfunction(L, &OcEmuHost::luaConsumeCallBudget);
+    lua_setfield(L, -2, "consumeCallBudget");
   }
-  lua_pop(L_, 1);
+  lua_pop(L, 1);
 
   // Dispatch runs guest code, so it must be inside the VM's panic guard -- and
   // must not run at all once the guest has faulted.
