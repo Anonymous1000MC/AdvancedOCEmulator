@@ -302,8 +302,8 @@ bool App::bootOcEmu() {
   {
     LuaContext ctx;
     ctx.screen = &screen_;
-    ctx.allocator = &allocator_;
-    ctx.internet = &internet_;
+    ctx.allocator = &ocemuAllocator_;
+    ocemuAllocator_.setInfinite(true);
     ctx.alerts = &alerts_;
     ctx.logLines = &logLines_;
     ctx.rebootRequested = &rebootRequested_;
@@ -714,12 +714,15 @@ void App::drawOverlay() {
         // The Component Manager's slider bounds this heap, and only this heap.
         ImGui::Text("Host RAM cap : %s",
                     ramKb < 0 ? "unlimited" : (std::to_string(ramKb) + " KiB").c_str());
-        ImGui::Text("Lua heap     : %zu bytes used, %zu peak", alloc.usedBytes(),
+        ImGui::Text("Standalone VM: %zu bytes used, %zu peak", alloc.usedBytes(),
                     alloc.peakBytes());
+        // The number that matters for an OpenComputers machine.
+        ImGui::Text("OC Lua heap  : %zu bytes used, %zu peak",
+                    ocemuAllocator_.usedBytes(), ocemuAllocator_.peakBytes());
         if (alloc.infinite()) {
           ImGui::Text("Heap cap     : unlimited");
         } else {
-          ImGui::Text("Heap cap     : %zu bytes", alloc.limitBytes());
+          ImGui::Text("Heap cap     : %zu bytes (standalone VM only)", alloc.limitBytes());
         }
         if (alloc.refusedCount() > 0) {
           ImGui::Text("Refused   : %llu requests, %zu bytes",

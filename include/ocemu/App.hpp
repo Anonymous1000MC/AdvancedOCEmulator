@@ -72,6 +72,13 @@ class App {
   ConfigStore config_;
   ScreenBuffer screen_;
   MemoryAllocator allocator_;
+  // The OpenComputers machine gets its OWN accounting allocator, deliberately
+  // uncapped. OCEmu does not meter guest RAM at all - machine RAM is a fixed
+  // spec - so the Component Manager's RAM slider must not bound this heap:
+  // doing so bricked the machine outright ("out of memory: the allocator
+  // refused a request of 128 bytes, cap 8388608 bytes"). We still count it, so
+  // diagnostics can report real Lua heap usage.
+  MemoryAllocator ocemuAllocator_;
   InternetCard internet_;
   GlyphAtlas atlas_;
   std::unique_ptr<LuaMachine> lua_;
