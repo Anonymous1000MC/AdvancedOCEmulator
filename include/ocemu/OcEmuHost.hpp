@@ -77,6 +77,12 @@ class OcEmuHost {
   // filesystem (the directory that holds init.lua, boot/, lib/, ...).
   void install(lua_State* L, std::string ocsrcDir, std::string machineDir);
 
+  // Pushes the configured RAM into the guest's `machine.totalMemory`, which
+  // computer.totalMemory() reports. main.lua hardcodes it to 2 MiB, so without
+  // this the guest always believed it had 2048K no matter what was configured.
+  // Pass ramKb <= 0 for "no cap configured".
+  void applyRamSpec(int ramKb);
+
   // Needed so host-driven dispatches can run inside the VM's panic guard.
   void setMachine(LuaMachine* m) { machine_ = m; }
   // Diagnostics needs to ask the guest what it can actually see, so the host

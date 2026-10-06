@@ -1154,6 +1154,26 @@ bool OcEmuHost::isNativeComponent(const std::string& type) {
   return type == kNativeScreen || type == kNativeKeyboard;
 }
 
+void OcEmuHost::applyRamSpec(int ramKb) {
+  if (machine_ == nullptr || !machine_->alive()) return;
+  lua_State* const L = machine_->L();
+
+  // With no cap configured, report something the guest can actually use rather
+  // than leaving OCEmu's 2 MiB default in place: programs gate on totalMemory(),
+  // and a machine the user set to unlimited should not look like 2048K.
+  constexpr int kUncappedBytes = 1024 * 1024 * 1024;  // 1 GiB
+  const auto bytes = ramKb > 0
+                         ? static_cast<double>(static_cast<long long>(ramKb) * 1024)
+                         : static_cast<double>(kUncappedBytes);
+
+  lua_getglobal(L, "machine");
+  if (lua_istable(L, -1)) {
+    lua_pushnumber(L, bytes);
+    lua_setfield(L, -2, "totalMemory");
+  }
+  lua_pop(L, 1);
+}
+
 std::vector<ComponentSpec> OcEmuHost::buildComponentList(int tier, bool internetCard) {
   // Addresses are stable on purpose. They identify the EEPROM and the machine's
   // writable filesystem on disk (~/.local/share/ocemu/<address>), so keeping the

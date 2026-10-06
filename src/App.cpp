@@ -188,6 +188,10 @@ void App::applyConfigToCore() {
   const TierSpec limits = cfg.displayLimits();
   screen_.applyLimits(limits);
 
+  // Push the RAM through to the guest immediately when it is already running,
+  // so the setting takes effect without a reboot.
+  if (ocemu_ != nullptr) ocemu_->applyRamSpec(cfg.effectiveRamKb());
+
   hostInfo_.gpuTier = cfg.gpuTier;
   hostInfo_.screenTier = cfg.screenTier;
   hostInfo_.ramLimitKb = ramKb;
@@ -349,6 +353,17 @@ bool App::bootOcEmu() {
     std::fprintf(stderr, "ocemu: %s\n", msg.c_str());
     showConsole_ = true;
     return false;
+  }
+
+  // After boot_openos: main.lua builds `machine` with totalMemory hardcoded to
+  // 2 MiB, so setting it any earlier would just be overwritten.
+  ocemu_->applyRamSpec(config_.values().effectiveRamKb());
+
+  {
+    const int ramKb = config_.values().effectiveRamKb();
+    std::printf("ocemu: guest RAM     : %s\n",
+                ramKb > 0 ? (std::to_string(ramKb) + " KiB").c_str()
+                          : "uncapped (1 GiB reported)");
   }
 
   std::printf("ocemu: OpenComputers core started (%s)\n", ocSrc_.c_str());

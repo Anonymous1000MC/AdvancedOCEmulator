@@ -1100,6 +1100,106 @@ check("load-noenv",   fn2 ~= nil and fn2() == nil)
 //   #2  ocemu::OcEmuHost::update(double) ()
 //
 // Force that teardown deterministically by starving the allocator, then tick.
+
+// computer.totalMemory() is `return machine.totalMemory`
+// (third_party/OCEmu/src/apis/computer.lua), and main.lua hardcodes that field to
+// 2 MiB. So the configured RAM never reached the guest: the slider moved, and
+// the machine still believed it had 2048K. Assert on the field the guest reads.
+void testRamSpecReachesGuest() {
+  group("memory: configured RAM reaches machine.totalMemory");
+  const std::string ocSrc = findOcEmuSrc();
+  const std::string ocData = findOcEmuData();
+  if (!std::filesystem::exists(std::filesystem::path(ocSrc) / "main.lua")) {
+    std::printf("  SKIP: OCEmu sources not found at %s\n", ocSrc.c_str());
+    return;
+  }
+
+  OcEmuHost host;
+  ScreenBuffer screen;
+  MemoryAllocator allocator;
+  LuaMachine machine;
+  std::vector<std::string> alerts, logs;
+  bool rebootReq = false, quitReq = false;
+
+  screen.applyLimits(3, 3);
+  allocator.setInfinite(true);
+
+  HostInfo info;
+  info.gpuTier = 3;
+  info.screenTier = 3;
+  info.ramLimitKb = -1;
+  info.internetEnabled = false;
+  info.cols = 160;
+  info.rows = 50;
+  info.depth = 8;
+  machine.setHostInfo(info);
+
+  LuaContext ctx;
+  ctx.screen = &screen;
+  ctx.allocator = &allocator;
+  ctx.alerts = &alerts;
+  ctx.logLines = &logs;
+  ctx.rebootRequested = &rebootReq;
+  ctx.quitRequested = &quitReq;
+  machine.attach(ctx);
+
+  std::string cfgErr;
+  if (!host.syncOcEmuConfig(ocData, 3, false, &cfgErr)) {
+    std::printf("  FAIL: syncOcEmuConfig: %s\n", cfgErr.c_str());
+    ++g_failures;
+    return;
+  }
+
+  std::string err;
+  const std::string rom = writeTempRom("ocemu_test_ram.lua", "-- ram harness\n");
+  if (!machine.reboot(rom, &err)) {
+    std::printf("  FAIL: VM boot: %s\n", err.c_str());
+    ++g_failures;
+    return;
+  }
+  host.install(machine.L(), ocSrc, ocData);
+  host.setMachine(&machine);
+
+  // Stand in for main.lua's table, which is where the hardcoded 2 MiB lives.
+  if (!machine.runChunk("machine = machine or { totalMemory = 2*1024*1024 }",
+                        "=ram_machine", &err)) {
+    std::printf("  FAIL: machine table: %s\n", err.c_str());
+    ++g_failures;
+    return;
+  }
+
+  const auto readTotalMemory = [&]() -> double {
+    std::string err2;
+    std::string out;
+    if (!machine.runChunkString("return tostring(machine.totalMemory)", "=ram_read",
+                                nullptr, &out, &err2)) {
+      std::printf("  FAIL: read totalMemory: %s\n", err2.c_str());
+      return -1.0;
+    }
+    return std::strtod(out.c_str(), nullptr);
+  };
+
+  CHECK_EQ(readTotalMemory(), 2.0 * 1024 * 1024);
+
+  // 8 MiB: the default in the shipped config.json.
+  host.applyRamSpec(8192);
+  const double as8MiB = readTotalMemory();
+  CHECK_EQ(as8MiB, 8192.0 * 1024.0);
+  std::printf("    8192 KiB configured -> machine.totalMemory = %.0f\n", as8MiB);
+
+  // 4 MiB, applied live without a reboot.
+  host.applyRamSpec(4096);
+  const double as4MiB = readTotalMemory();
+  CHECK_EQ(as4MiB, 4096.0 * 1024.0);
+  std::printf("    4096 KiB live      -> machine.totalMemory = %.0f\n", as4MiB);
+
+  // Uncapped must not silently fall back to OCEmu's 2048K default.
+  host.applyRamSpec(-1);
+  const double uncapped = readTotalMemory();
+  CHECK(uncapped > 4096.0 * 1024.0);
+  std::printf("    uncapped           -> machine.totalMemory = %.0f\n", uncapped);
+}
+
 void testFaultedStateIsNotTouched() {
   group("regression: faulted Lua state is never dereferenced");
   const std::string ocSrc = findOcEmuSrc();
@@ -1601,6 +1701,7 @@ int main() {
   testRebootIsClean();
   testHostTick();
   testElsaHost();
+  testRamSpecReachesGuest();
   testFaultedStateIsNotTouched();
   testOpenOsBoot();
 
