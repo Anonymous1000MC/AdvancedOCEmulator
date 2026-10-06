@@ -119,6 +119,12 @@ class App {
 
   // Maps a window position to a cell, or false when outside the grid.
   bool cellAt(ImVec2 pos, int* col, int* row) const;
+  // Diagnostics: ask the guest what components it can see, so the host's own
+  // list can be diffed against it.
+  void refreshGuestComponents();
+  std::vector<std::string> guestComponents_;
+  std::string guestComponentsError_;
+  bool guestComponentsQueried_ = false;
   std::string selectedText() const;
   void copySelection();
   void pasteClipboard();

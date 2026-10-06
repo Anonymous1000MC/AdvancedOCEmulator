@@ -91,6 +91,12 @@ class LuaMachine {
   bool runChunk(const std::string& source, const char* chunkName,
                 std::string* error = nullptr);
 
+  // As runChunkIn, but keeps the chunk's first string result in `out`. Used by
+  // diagnostics to read structured answers back out of the guest sandbox.
+  bool runChunkString(const std::string& source, const char* chunkName,
+                      const char* envGlobal, std::string* out,
+                      std::string* error = nullptr);
+
   // As runChunk, but the chunk is compiled with the given global table as its
   // _ENV. This is how the host reaches into a sandboxed guest environment (the
   // machine's `component`, `computer`, ... tables live there, not in _G).

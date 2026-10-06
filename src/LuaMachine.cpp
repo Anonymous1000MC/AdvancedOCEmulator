@@ -235,6 +235,65 @@ bool LuaMachine::runChunk(const std::string& source, const char* chunkName,
   return runChunkIn(source, chunkName, nullptr, error);
 }
 
+bool LuaMachine::runChunkString(const std::string& source, const char* chunkName,
+                                const char* envGlobal, std::string* out,
+                                std::string* error) {
+  if (out != nullptr) out->clear();
+  if (L_ == nullptr || state_ != MachineState::Running) {
+    if (error != nullptr) *error = "no running Lua state";
+    return false;
+  }
+  if (setjmp(panicJump()) != 0) {
+    g_activeMachine = nullptr;
+    state_ = alloc().outOfMemory() ? MachineState::OutOfMemory : MachineState::Faulted;
+    try {
+      if (lastError_.empty()) lastError_ = "panic while running injected chunk";
+    } catch (...) {
+    }
+    closeStateNoThrow();
+    if (error != nullptr) *error = lastError_;
+    return false;
+  }
+  g_activeMachine = this;
+  if (envGlobal != nullptr) {
+    lua_getglobal(L_, envGlobal);
+    if (!lua_istable(L_, -1)) lua_pop(L_, 1);
+  }
+  lua_rawgetp(L_, LUA_REGISTRYINDEX, const_cast<char*>(&kErrorHandlerKey));
+  if (luaL_loadbuffer(L_, source.data(), source.size(), chunkName) != LUA_OK) {
+    captureTopError();
+    g_activeMachine = nullptr;
+    if (error != nullptr) *error = lastError_;
+    return false;
+  }
+  if (envGlobal != nullptr && lua_gettop(L_) > 2) {
+    lua_pushvalue(L_, 1);
+    lua_setupvalue(L_, -2, 1);
+  }
+  // One result wanted: diagnostics chunks return a string.
+  if (lua_pcall(L_, 0, 1, -2) != LUA_OK) {
+    captureTopError();
+    g_activeMachine = nullptr;
+    if (error != nullptr) *error = lastError_;
+    return false;
+  }
+  if (out != nullptr && lua_isstring(L_, -1)) {
+    std::size_t len = 0;
+    const char* v = lua_tolstring(L_, -1, &len);
+    out->assign(v, len);
+  }
+  lua_settop(L_, 0);
+  g_activeMachine = nullptr;
+  if (alloc().outOfMemory()) {
+    state_ = MachineState::OutOfMemory;
+    lastError_ = describeOom();
+    if (error != nullptr) *error = lastError_;
+    closeStateNoThrow();
+    return false;
+  }
+  return true;
+}
+
 bool LuaMachine::runChunkIn(const std::string& source, const char* chunkName,
                             const char* envGlobal, std::string* error) {
   if (L_ == nullptr || state_ != MachineState::Running) {

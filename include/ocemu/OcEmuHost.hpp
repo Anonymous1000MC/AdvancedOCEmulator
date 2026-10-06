@@ -79,6 +79,9 @@ class OcEmuHost {
 
   // Needed so host-driven dispatches can run inside the VM's panic guard.
   void setMachine(LuaMachine* m) { machine_ = m; }
+  // Diagnostics needs to ask the guest what it can actually see, so the host
+  // and guest component lists can be diffed against each other.
+  [[nodiscard]] LuaMachine* machine() const { return machine_; }
 
   // --- component registration --------------------------------------------
   // Marker: component type names that this host provides natively instead of

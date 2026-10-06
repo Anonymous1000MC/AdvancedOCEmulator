@@ -624,6 +624,52 @@ void App::drawRestoreControls() {
   }
 }
 
+void App::refreshGuestComponents() {
+  guestComponents_.clear();
+  guestComponentsError_.clear();
+  guestComponentsQueried_ = true;
+  if (ocemu_ == nullptr || ocemu_->machine() == nullptr) {
+    guestComponentsError_ = "no machine";
+    return;
+  }
+  // Run inside the guest sandbox, where `component` exists, and stash the
+  // answer where the host can read it back.
+  const std::string chunk = R"LUA(
+local seen = {}
+for t in pairs(component.list()) do seen[#seen+1] = t end
+table.sort(seen)
+_G.__ocemuGuestEnv.OCEMU_DIAG_COMPONENTS = seen
+)LUA";
+  std::string err;
+  if (!ocemu_->machine()->runChunkIn(chunk, "=ocemu_diag_components",
+                                    "__ocemuGuestEnv", &err)) {
+    guestComponentsError_ = err;
+    return;
+  }
+  const std::string read = R"LUA(
+local out = {}
+for _, t in ipairs(_G.__ocemuGuestEnv.OCEMU_DIAG_COMPONENTS or {}) do
+  out[#out+1] = t
+end
+return table.concat(out, "\n")
+)LUA";
+  std::string joined;
+  if (!ocemu_->machine()->runChunkString(read, "=ocemu_diag_read", nullptr, &joined,
+                                         &err)) {
+    guestComponentsError_ = err;
+    return;
+  }
+  std::size_t start = 0;
+  while (start <= joined.size()) {
+    const std::size_t nl = joined.find('\n', start);
+    const std::string line =
+        joined.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+    if (!line.empty()) guestComponents_.push_back(line);
+    if (nl == std::string::npos) break;
+    start = nl + 1;
+  }
+}
+
 void App::drawOverlay() {
   if (showStats_) {
     const MemoryAllocator& alloc = allocator_;
@@ -635,18 +681,118 @@ void App::drawOverlay() {
                   atlas_.usingSystemFont() ? atlas_.fontPath().c_str() : "ImGui built-in");
       ImGui::Text("Grid      : %d x %d @ %d-bit", screen_.cols(), screen_.rows(),
                   screen_.depth());
-      ImGui::Text("RAM       : %zu / ", alloc.usedBytes());
-      ImGui::SameLine();
-      if (alloc.infinite()) {
-        ImGui::TextUnformatted("infinite");
-      } else {
-        ImGui::Text("%zu bytes", alloc.limitBytes());
+      // Two different numbers, and conflating them is what made this read 0:
+      // `limitBytes` is our host-side safety cap, while the guest is told its
+      // RAM is a fixed machine spec. Show both, and say which is which.
+      {
+        const int ramKb = config_.values().effectiveRamKb();
+        if (ramKb < 0) {
+          ImGui::Text("RAM       : unlimited (infinite_memory)");
+        } else {
+          ImGui::Text("RAM       : %d KiB (%zu bytes)", ramKb, alloc.limitBytes());
+        }
+        ImGui::Text("Lua heap  : %zu bytes used, %zu peak", alloc.usedBytes(),
+                    alloc.peakBytes());
+        if (alloc.infinite()) {
+          ImGui::Text("Host cap  : unlimited");
+        } else {
+          ImGui::Text("Host cap  : %zu bytes", alloc.limitBytes());
+        }
+        if (alloc.refusedCount() > 0) {
+          ImGui::Text("Refused   : %llu requests, %zu bytes",
+                      static_cast<unsigned long long>(alloc.refusedCount()),
+                      alloc.refusedBytes());
+        }
       }
-      ImGui::Text("Peak      : %zu bytes", alloc.peakBytes());
       ImGui::Text("Requests  : %zu active / %zu total", internet_.activeRequests(),
                   internet_.totalRequests());
       ImGui::Text("Uptime    : %.1f s", uptime_);
       ImGui::Text("Frames    : %u", frameCount_);
+      ImGui::Spacing();
+      // What this emulator actually provides. Deliberately NOT taken from the
+      // guest's component manager: that only shows what booted, so a component
+      // that failed to construct (a missing library, a bad path) is invisible -
+      // which is exactly how a machine can silently be missing a card.
+      ImGui::Separator();
+      ImGui::TextUnformatted("Device specs (host)");
+      {
+        const EmulatorConfig& cfg = config_.values();
+        ImGui::Text("GPU / screen tier : %d / %d", cfg.gpuTier, cfg.screenTier);
+        ImGui::Text("Resolution        : %d x %d @ %d-bit", screen_.cols(),
+                    screen_.rows(), screen_.depth());
+        ImGui::Text("Internet card     : %s",
+                    cfg.internetCard ? "enabled" : "disabled");
+        const int ramKb = cfg.effectiveRamKb();
+        ImGui::Text("Guest RAM spec    : %s",
+                    ramKb < 0 ? "unlimited" : (std::to_string(ramKb) + " KiB").c_str());
+
+        const auto specs =
+            OcEmuHost::buildComponentList(cfg.gpuTier, cfg.internetCard);
+
+        // The emulator's list is what we INTEND to provide; the guest's is what
+        // actually booted. They can disagree - a component whose constructor
+        // fails (a missing Lua library, a bad path) simply never appears - and
+        // that disagreement is the interesting bit, so show it.
+        ImGui::Text("Emulator provides : %zu", specs.size());
+
+        if (ImGui::Button("Refresh guest view")) refreshGuestComponents();
+        if (!guestComponentsError_.empty()) {
+          ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f), "guest query failed: %s",
+                             guestComponentsError_.c_str());
+        } else if (guestComponentsQueried_) {
+          ImGui::Text("Guest sees        : %zu", guestComponents_.size());
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("%-14s %-38s %-10s %s", "TYPE", "ADDRESS", "GUEST",
+                            "ARGS");
+        for (const auto& c : specs) {
+          std::string args;
+          for (std::size_t i = 0; i < c.args.size(); ++i) {
+            if (i != 0) args += ", ";
+            args += c.args[i];
+          }
+          // The guest never sees the *_native suffix; that is an internal name
+          // that would otherwise read as a missing component type.
+          std::string type = c.type;
+          const std::string suffix = "_native";
+          if (type.size() > suffix.size() &&
+              type.compare(type.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            type.erase(type.size() - suffix.size());
+          }
+          const bool seen = guestComponentsQueried_ &&
+                            std::find(guestComponents_.begin(), guestComponents_.end(),
+                                      type) != guestComponents_.end();
+          // Green when the guest agrees, orange when the emulator promised
+          // something the guest never got.
+          ImGui::TextColored(seen ? ImVec4(0.55f, 0.85f, 0.55f, 1.0f)
+                                  : ImVec4(1.0f, 0.62f, 0.35f, 1.0f),
+                             "%-14s %-38s %-10s %s", type.c_str(),
+                             c.address.empty() ? "(from slot)" : c.address.c_str(),
+                             guestComponentsQueried_ ? (seen ? "yes" : "MISSING")
+                                                     : "?",
+                             args.c_str());
+        }
+        if (guestComponentsQueried_) {
+          // Anything the guest sees that we did not intend is also worth a look:
+          // it means the component list and the machine disagree.
+          for (const auto& g : guestComponents_) {
+            const bool known = std::any_of(
+                specs.begin(), specs.end(), [&](const ComponentSpec& c) {
+                  std::string t = c.type;
+                  const std::string suffix = "_native";
+                  if (t.size() > suffix.size() &&
+                      t.compare(t.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                    t.erase(t.size() - suffix.size());
+                  }
+                  return t == g;
+                });
+            if (!known) {
+              ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f),
+                                 "%-14s %-38s %-10s %s", g.c_str(), "-", "EXTRA", "");
+            }
+          }
+        }
+      }
       ImGui::Spacing();
       ImGui::TextUnformatted("Zoom");
       ImGui::SameLine();
