@@ -672,7 +672,7 @@ table.sort(seen)
 local ram = "?"
 local okRam, ramBytes = pcall(computer.totalMemory)
 if okRam and type(ramBytes) == "number" then ram = tostring(ramBytes) end
-return table.concat(seen, "\n") .. "|" .. ram
+return table.concat(seen, "\n") .. "\n|" .. ram .. "\n"
 )LUA";
   std::string err;
   std::string joined;
